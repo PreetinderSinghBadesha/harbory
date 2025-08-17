@@ -6,7 +6,7 @@ tmp_dir = "tmp"
   bin = "tmp/main"
   include_ext = ["go", "tpl", "tmpl", "html", "yaml"]
   exclude_dir = ["tmp", "vendor"]
-  args_bin = ["--config", "./config/local.yaml"]
+  args_bin = ["--config", "./config/docker.yaml"]
 
 [log]
   time = true
