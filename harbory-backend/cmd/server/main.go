@@ -11,11 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
-	"github.com/preetindersinghbadesha/harbory/internal/api"
-	"github.com/preetindersinghbadesha/harbory/internal/api/http/handlers"
 	"github.com/preetindersinghbadesha/harbory/internal/config"
+	"github.com/preetindersinghbadesha/harbory/internal/router"
 )
 
 func main() {
@@ -23,19 +20,8 @@ func main() {
 	cfg := config.MustLoad()
 
 	// setup router
-	router := gin.Default()
-
-	// Health endpoints
-	router.GET("/api/health", api.HealthHandler())
-
-	// Container endpoints
-	router.GET("/api/container/all", handlers.GetAllContainersHandler())
-	router.GET("/api/containers/:id", handlers.GetContainerByParams())
-
-	// Image endpoints
-	router.GET("/api/images/all", handlers.GetAllImagesHandler())
-	router.GET("/api/images/:id", handlers.GetImageByParams())
-
+	router := router.SetupRouter()
+	
 	// CORS middleware
 	corsHandler := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
