@@ -1,0 +1,64 @@
+{{define "content"}}
+<div class="max-w-2xl mx-auto px-4 py-6 sm:px-0">
+    <div class="mb-6">
+        <h1 class="text-2xl font-semibold text-white">Create New Container</h1>
+        <p class="mt-1 text-sm text-gray-400">Launch a new Docker container from an image.</p>
+    </div>
+
+    <div class="bg-gray-800 shadow sm:rounded-lg border border-gray-700">
+        <div class="px-4 py-5 sm:p-6">
+            <form action="/create" method="POST" class="space-y-6">
+                <div>
+                    <label for="image" class="block text-sm font-medium text-gray-300">Image Name</label>
+                    <div class="mt-1">
+                        <input type="text" name="image" id="image" required placeholder="e.g. nginx:latest"
+                            class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-600 bg-gray-700 text-white rounded-md p-2">
+                        <p class="mt-2 text-sm text-gray-500">The Docker image to use (will be pulled if not present).
+                        </p>
+                    </div>
+                </div>
+
+                <div>
+                    <label for="name" class="block text-sm font-medium text-gray-300">Container Name</label>
+                    <div class="mt-1">
+                        <input type="text" name="name" id="name" placeholder="e.g. my-web-server"
+                            class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-600 bg-gray-700 text-white rounded-md p-2">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-2">
+                    <div>
+                        <label for="hostPort" class="block text-sm font-medium text-gray-300">Host Port</label>
+                        <div class="mt-1">
+                            <input type="text" name="hostPort" id="hostPort" placeholder="e.g. 8080"
+                                class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-600 bg-gray-700 text-white rounded-md p-2">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label for="containerPort" class="block text-sm font-medium text-gray-300">Container
+                            Port</label>
+                        <div class="mt-1">
+                            <input type="text" name="containerPort" id="containerPort" placeholder="e.g. 80"
+                                class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-600 bg-gray-700 text-white rounded-md p-2">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="pt-5">
+                    <div class="flex justify-end">
+                        <a href="/"
+                            class="bg-gray-700 py-2 px-4 border border-gray-600 rounded-md shadow-sm text-sm font-medium text-gray-200 hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 transition-colors">
+                            Cancel
+                        </a>
+                        <button type="submit"
+                            class="ml-3 inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors shadow-blue-500/30">
+                            Create Container
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{{end}}

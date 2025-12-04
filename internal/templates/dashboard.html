@@ -1,0 +1,67 @@
+{{define "content"}}
+<div class="px-4 py-6 sm:px-0">
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-2xl font-semibold text-white">Containers</h1>
+        <a href="/create"
+            class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition-colors shadow-lg shadow-blue-500/30">
+            + New Container
+        </a>
+    </div>
+
+    <div class="bg-gray-800 shadow overflow-hidden sm:rounded-md border border-gray-700">
+        <ul role="list" class="divide-y divide-gray-700">
+            {{range .}}
+            {{ $isRunning := eq .State "running" }}
+            <li>
+                <div class="px-4 py-4 sm:px-6 hover:bg-gray-750 transition-colors">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center min-w-0">
+                            <div class="flex-shrink-0">
+                                <div
+                                    class="h-10 w-10 rounded-full flex items-center justify-center {{if $isRunning}}bg-green-900 text-green-300{{else}}bg-gray-700 text-gray-400{{end}}">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none"
+                                        viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="ml-4">
+                                <p class="text-sm font-medium text-blue-400 truncate">{{index .Names 0}}</p>
+                                <p class="text-sm text-gray-400 truncate">{{.Image}}</p>
+                            </div>
+                        </div>
+                        <div class="flex flex-col items-end">
+                            <span
+                                class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full {{if $isRunning}}bg-green-100 text-green-800{{else}}bg-gray-100 text-gray-800{{end}}">
+                                {{.State}}
+                            </span>
+                            <p class="mt-1 text-xs text-gray-500">{{.Status}}</p>
+                        </div>
+                    </div>
+                    <div class="mt-2 sm:flex sm:justify-between">
+                        <div class="sm:flex">
+                            <p class="flex items-center text-sm text-gray-400">
+                                <svg class="flex-shrink-0 mr-1.5 h-5 w-5 text-gray-500"
+                                    xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd"
+                                        d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z"
+                                        clip-rule="evenodd" />
+                                </svg>
+                                {{range .Ports}}
+                                {{.PublicPort}}:{{.PrivatePort}}
+                                {{end}}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </li>
+            {{else}}
+            <li class="px-4 py-8 text-center text-gray-500">
+                No containers found. Start one to see it here!
+            </li>
+            {{end}}
+        </ul>
+    </div>
+</div>
+{{end}}
