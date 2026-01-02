@@ -1,0 +1,71 @@
+# --- Binaries & Build Artifacts ---
+# Main binaries (generic patterns)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries (built with `go test -c`)
+*.test
+
+# Output directories (if you build to specific folders)
+/bin/
+/dist/
+/build/
+
+# --- Dependencies & Modules ---
+# Vendor directory (Remove this line if you intentionally want to commit vendored dependencies)
+vendor/
+
+# Go workspace files (local workspace configuration)
+go.work
+go.work.sum
+
+# --- Testing & Code Quality ---
+# Coverage profiles
+*.out
+coverage.txt
+profile.out
+
+# --- Environment & Security ---
+# IMPORTANT: Never commit actual .env files containing secrets
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Allow the example file to serve as a template for other developers
+!.env.example
+
+# --- IDE & Editor Configs ---
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# JetBrains (GoLand, IntelliJ)
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Vim / Emacs
+*.swp
+*.swo
+*~
+\#*#
+
+# --- OS Specific Files ---
+# Mac
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# configurations
+config/ 
