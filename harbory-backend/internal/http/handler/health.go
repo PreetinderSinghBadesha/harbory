@@ -24,7 +24,7 @@ func buildHealthResponse(startTime time.Time) HealthResponse {
         "database": {
             Status:  "ok",
             Latency: 15,
-        }
+        },
     }
 
     return HealthResponse{
