@@ -10,8 +10,18 @@
 		"skipLibCheck": true,
 		"sourceMap": true,
 		"strict": true,
-		"moduleResolution": "bundler"
-	}
+		"moduleResolution": "bundler",
+		"module": "esnext",
+		"noEmit": true
+	},
+	"exclude": [
+		"node_modules",
+		".svelte-kit",
+		"postcss.config.cjs",
+		"tailwind.config.cjs",
+		"svelte.config.js",
+		"vite.config.ts"
+	]
 	// Path aliases are handled by https://svelte.dev/docs/kit/configuration#alias
 	// except $lib which is handled by https://svelte.dev/docs/kit/configuration#files
 	//
