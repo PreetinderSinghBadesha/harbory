@@ -19,15 +19,15 @@
 </div>
   
 <nav class="flex flex-col py-4 gap-1">
-    <a href="/" class="flex items-center gap-3 px-6 py-3 mx-2 rounded-lg text-slate-300 no-underline transition-all hover:bg-[#1f7d53]">
+    <a href="/dashboard" class="flex items-center gap-3 px-6 py-3 mx-2 rounded-lg text-slate-300 no-underline transition-all hover:bg-[#1f7d53]">
         <img src={dashboardIcon} alt="Dashboard Logo" class="w-5 h-5"/>
         <span class="font-semibold">Dashboard</span>
     </a>
-    <a href="/dashboard" class="flex items-center gap-3 px-6 py-3 mx-2 rounded-lg text-slate-300 no-underline transition-all hover:bg-[#1f7d53] hover:text-slate-100">
-        <img src={projectsIcon} alt="Projects Logo" class="w-5 h-5"/>
-        <span class="font-semibold">Projects</span>
-    </a>
     <a href="/projects" class="flex items-center gap-3 px-6 py-3 mx-2 rounded-lg text-slate-300 no-underline transition-all hover:bg-[#1f7d53] hover:text-slate-100">
+        <img src={projectsIcon} alt="Projects Logo" class="w-5 h-5"/>
+        <span class="font-semibold">Containers</span>
+    </a>
+    <a href="/docker" class="flex items-center gap-3 px-6 py-3 mx-2 rounded-lg text-slate-300 no-underline transition-all hover:bg-[#1f7d53] hover:text-slate-100">
         <img src={dockerIcon} alt="Docker Logo" class="w-5 h-5"/>
         <span class="font-semibold">Docker</span>
     </a>
