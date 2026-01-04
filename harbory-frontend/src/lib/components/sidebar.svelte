@@ -23,6 +23,12 @@
         <img src={dashboardIcon} alt="Dashboard Logo" class="w-5 h-5"/>
         <span class="font-semibold">Dashboard</span>
     </a>
+    <a href="/deploy" class="flex items-center gap-3 px-6 py-3 mx-2 rounded-lg text-slate-300 no-underline transition-all hover:bg-[#1f7d53] hover:text-slate-100">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+        </svg>
+        <span class="font-semibold">Deploy</span>
+    </a>
     <a href="/projects" class="flex items-center gap-3 px-6 py-3 mx-2 rounded-lg text-slate-300 no-underline transition-all hover:bg-[#1f7d53] hover:text-slate-100">
         <img src={projectsIcon} alt="Projects Logo" class="w-5 h-5"/>
         <span class="font-semibold">Containers</span>

@@ -34,6 +34,7 @@ func Router(startTime time.Time) *http.ServeMux {
 
 	//router for deployment
 	mux.HandleFunc("POST /api/deploy", handler.DeployGithubHandler())
+	mux.Handle("/api/deploy/ws", handler.DeployWebSocketHandler())
 
 	return mux
 }

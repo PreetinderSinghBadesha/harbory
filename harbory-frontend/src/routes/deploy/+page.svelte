@@ -1,0 +1,263 @@
+<script lang="ts">
+  import { onDestroy } from 'svelte';
+
+  let repoUrl = $state('');
+  let hasDockerfile = $state(true);
+  let dockerfilePath = $state('./Dockerfile');
+  let framework = $state('');
+  let deploying = $state(false);
+  let logs: string[] = $state([]);
+  let currentStep = $state('');
+  let deploymentStatus = $state<'idle' | 'deploying' | 'success' | 'error'>('idle');
+  let ws: WebSocket | null = null;
+
+  const frameworks = ['node', 'react', 'go', 'flutter'];
+
+  function handleDeploy() {
+    if (!repoUrl) {
+      alert('Please enter a repository URL');
+      return;
+    }
+
+    if (!hasDockerfile && !framework) {
+      alert('Please select a framework or provide a Dockerfile');
+      return;
+    }
+
+    deploying = true;
+    deploymentStatus = 'deploying';
+    logs = [];
+    currentStep = 'Connecting...';
+
+    ws = new WebSocket('ws://localhost:8080/api/deploy/ws');
+
+    ws.onopen = () => {
+      currentStep = 'Connected - Sending deployment request...';
+
+      const payload = {
+        repo_url: repoUrl,
+        has_dockerfile: hasDockerfile,
+        dockerfile_path: hasDockerfile ? dockerfilePath : '',
+        framework: !hasDockerfile ? framework : ''
+      };
+      
+      ws?.send(JSON.stringify(payload));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        
+        switch (message.type) {
+          case 'status':
+            currentStep = message.message;
+            logs = [...logs, `[STATUS] ${message.message}`];
+            break;
+          case 'log':
+            logs = [...logs, message.message];
+            break;
+          case 'error':
+            deploymentStatus = 'error';
+            currentStep = 'Deployment failed';
+            logs = [...logs, `[ERROR] ${message.message}`];
+            deploying = false;
+            break;
+          case 'success':
+            deploymentStatus = 'success';
+            currentStep = 'Deployment completed successfully!';
+            logs = [...logs, `[SUCCESS] ${message.message}`];
+            deploying = false;
+            break;
+        }
+        
+        setTimeout(() => {
+          const logContainer = document.getElementById('log-container');
+          if (logContainer) {
+            logContainer.scrollTop = logContainer.scrollHeight;
+          }
+        }, 10);
+      } catch (error) {
+        console.error('Error parsing message:', error);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      deploymentStatus = 'error';
+      currentStep = 'Connection error';
+      logs = [...logs, '[ERROR] WebSocket connection failed'];
+      deploying = false;
+    };
+
+    ws.onclose = () => {
+      if (deploying) {
+        deploying = false;
+        if (deploymentStatus === 'deploying') {
+          deploymentStatus = 'error';
+          currentStep = 'Connection closed unexpectedly';
+        }
+      }
+    };
+  }
+
+  function resetForm() {
+    repoUrl = '';
+    hasDockerfile = true;
+    dockerfilePath = './Dockerfile';
+    framework = '';
+    logs = [];
+    currentStep = '';
+    deploymentStatus = 'idle';
+    deploying = false;
+  }
+
+  onDestroy(() => {
+    if (ws) {
+      ws.close();
+    }
+  });
+</script>
+
+<div class="space-y-6">
+  <div>
+    <h1 class="text-3xl font-bold text-gray-800">Deploy Application</h1>
+    <p class="text-gray-600 mt-2">Deploy your application from a Git repository</p>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white rounded-lg shadow-md p-6">
+      <h2 class="text-xl font-bold text-gray-800 mb-4">Configuration</h2>
+      
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-2">
+            Repository URL *
+          </label>
+          <input
+            type="text"
+            bind:value={repoUrl}
+            placeholder="https://github.com/username/repo"
+            disabled={deploying}
+            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#1f7d53] focus:border-transparent disabled:bg-gray-100"
+          />
+        </div>
+
+        <div class="flex items-center gap-3">
+          <input
+            type="checkbox"
+            id="hasDockerfile"
+            bind:checked={hasDockerfile}
+            disabled={deploying}
+            class="w-4 h-4 text-[#1f7d53] border-gray-300 rounded focus:ring-[#1f7d53]"
+          />
+          <label for="hasDockerfile" class="text-sm font-medium text-gray-700">
+            Repository has a Dockerfile
+          </label>
+        </div>
+
+        {#if hasDockerfile}
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              Dockerfile Path
+            </label>
+            <input
+              type="text"
+              bind:value={dockerfilePath}
+              placeholder="./Dockerfile"
+              disabled={deploying}
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#1f7d53] focus:border-transparent disabled:bg-gray-100"
+            />
+          </div>
+        {:else}
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              Framework *
+            </label>
+            <select
+              bind:value={framework}
+              disabled={deploying}
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#1f7d53] focus:border-transparent disabled:bg-gray-100"
+            >
+              <option value="">Select a framework</option>
+              {#each frameworks as fw}
+                <option value={fw}>{fw.charAt(0).toUpperCase() + fw.slice(1)}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+
+        <div class="flex gap-3 pt-4">
+          <button
+            onclick={handleDeploy}
+            disabled={deploying}
+            class="flex-1 px-6 py-3 bg-[#1f7d53] text-white rounded-lg hover:bg-[#186642] disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-semibold"
+          >
+            {deploying ? 'Deploying...' : 'Deploy Application'}
+          </button>
+          
+          {#if deploymentStatus !== 'idle' && !deploying}
+            <button
+              onclick={resetForm}
+              class="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-semibold"
+            >
+              Reset
+            </button>
+          {/if}
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow-md p-6">
+      <h2 class="text-xl font-bold text-gray-800 mb-4">Deployment Status</h2>
+
+      <div class="mb-4">
+        {#if deploymentStatus === 'idle'}
+          <div class="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-center">
+            Ready to deploy
+          </div>
+        {:else if deploymentStatus === 'deploying'}
+          <div class="px-4 py-2 bg-blue-100 text-blue-800 rounded-lg text-center flex items-center justify-center gap-2">
+            <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-800"></div>
+            Deploying...
+          </div>
+        {:else if deploymentStatus === 'success'}
+          <div class="px-4 py-2 bg-green-100 text-green-800 rounded-lg text-center flex items-center justify-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            Deployment Successful
+          </div>
+        {:else if deploymentStatus === 'error'}
+          <div class="px-4 py-2 bg-red-100 text-red-800 rounded-lg text-center flex items-center justify-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+            Deployment Failed
+          </div>
+        {/if}
+      </div>
+
+      {#if currentStep}
+        <div class="mb-4 p-3 bg-gray-50 rounded-lg">
+          <p class="text-sm font-medium text-gray-700">{currentStep}</p>
+        </div>
+      {/if}
+
+      <div class="mt-4">
+        <h3 class="text-sm font-semibold text-gray-700 mb-2">Deployment Logs</h3>
+        <div
+          id="log-container"
+          class="bg-gray-900 text-green-400 rounded-lg p-4 h-96 overflow-y-auto font-mono text-xs"
+        >
+          {#if logs.length === 0}
+            <p class="text-gray-500">No logs yet...</p>
+          {:else}
+            {#each logs as log}
+              <div class="mb-1">{log}</div>
+            {/each}
+          {/if}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
