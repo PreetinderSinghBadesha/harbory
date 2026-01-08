@@ -12,11 +12,16 @@ func Router(startTime time.Time) *http.ServeMux {
 
 	// Public routes (no authentication required)
 	mux.HandleFunc("/api/health", handler.HealthHandler(startTime))
+	mux.HandleFunc("/api/auth/login", handler.LoginHandler())
 	mux.HandleFunc("POST /api/auth/login", handler.LoginHandler())
+	mux.HandleFunc("/api/auth/verify", handler.VerifyHandler())
 	mux.HandleFunc("GET /api/auth/verify", handler.VerifyHandler())
 
 	// Protected routes (authentication required)
+	mux.HandleFunc("/api/auth/logout", middleware.AuthMiddleware(handler.LogoutHandler()))
 	mux.HandleFunc("POST /api/auth/logout", middleware.AuthMiddleware(handler.LogoutHandler()))
+	
+	mux.HandleFunc("/api/auth/change-password", middleware.AuthMiddleware(handler.ChangePasswordHandler()))
 	mux.HandleFunc("POST /api/auth/change-password", middleware.AuthMiddleware(handler.ChangePasswordHandler()))
 
 	// router for containers

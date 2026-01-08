@@ -51,7 +51,7 @@ func LoginHandler() http.HandlerFunc {
 			Value:    token,
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   false
+			Secure:   false,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   86400,
 		})
