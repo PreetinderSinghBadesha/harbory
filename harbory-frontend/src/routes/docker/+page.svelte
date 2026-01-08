@@ -8,6 +8,9 @@
   let volumes: any[] = $state([]);
   let networks: any[] = $state([]);
   let loading = $state(true);
+  let selectedItem: any = $state(null);
+  let showModal = $state(false);
+  let modalType = $state('');
 
   onMount(async () => {
     await fetchAllData();
@@ -37,6 +40,27 @@
   function setTab(tab: string) {
     activeTab = tab;
   }
+
+  function showInfo(item: any, type: string) {
+    selectedItem = item;
+    modalType = type;
+    showModal = true;
+  }
+
+  function closeModal() {
+    showModal = false;
+    selectedItem = null;
+    modalType = '';
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
 </script>
 
 <div class="space-y-6">
@@ -107,6 +131,7 @@
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">State</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Ports</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-200">
@@ -122,10 +147,21 @@
                       </td>
                       <td class="px-4 py-3 text-sm text-gray-600">
                         {#if container.Ports?.length > 0}
-                          {container.Ports.map(p => p.PublicPort ? `${p.PublicPort}:${p.PrivatePort}` : p.PrivatePort).join(', ')}
+                          {container.Ports.map((p: any) => p.PublicPort ? `${p.PublicPort}:${p.PrivatePort}` : p.PrivatePort).join(', ')}
                         {:else}
                           -
                         {/if}
+                      </td>
+                      <td class="px-4 py-3">
+                        <button
+                          onclick={() => showInfo(container, 'container')}
+                          class="text-[#1f7d53] hover:text-[#186642] transition-colors"
+                          title="View Details"
+                        >
+                          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                          </svg>
+                        </button>
                       </td>
                     </tr>
                   {/each}
@@ -149,6 +185,7 @@
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Image ID</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Size</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-200">
@@ -161,8 +198,19 @@
                         {image.RepoTags?.[0]?.split(':')[1] || '<none>'}
                       </td>
                       <td class="px-4 py-3 text-sm text-gray-600 font-mono text-xs">{image.Id?.substring(7, 19)}</td>
-                      <td class="px-4 py-3 text-sm text-gray-600">{(image.Size / 1024 / 1024).toFixed(2)} MB</td>
+                      <td class="px-4 py-3 text-sm text-gray-600">{formatBytes(image.Size)}</td>
                       <td class="px-4 py-3 text-sm text-gray-600">{new Date(image.Created * 1000).toLocaleDateString()}</td>
+                      <td class="px-4 py-3">
+                        <button
+                          onclick={() => showInfo(image, 'image')}
+                          class="text-[#1f7d53] hover:text-[#186642] transition-colors"
+                          title="View Details"
+                        >
+                          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                          </svg>
+                        </button>
+                      </td>
                     </tr>
                   {/each}
                 </tbody>
@@ -184,6 +232,7 @@
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Driver</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mountpoint</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Scope</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-200">
@@ -193,6 +242,17 @@
                       <td class="px-4 py-3 text-sm text-gray-600">{volume.Driver}</td>
                       <td class="px-4 py-3 text-sm text-gray-600 truncate max-w-md">{volume.Mountpoint}</td>
                       <td class="px-4 py-3 text-sm text-gray-600">{volume.Scope}</td>
+                      <td class="px-4 py-3">
+                        <button
+                          onclick={() => showInfo(volume, 'volume')}
+                          class="text-[#1f7d53] hover:text-[#186642] transition-colors"
+                          title="View Details"
+                        >
+                          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                          </svg>
+                        </button>
+                      </td>
                     </tr>
                   {/each}
                 </tbody>
@@ -214,6 +274,7 @@
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Driver</th>
                     <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Scope</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-200">
@@ -223,6 +284,17 @@
                       <td class="px-4 py-3 text-sm text-gray-600 font-mono text-xs">{network.Id?.substring(0, 12)}</td>
                       <td class="px-4 py-3 text-sm text-gray-600">{network.Driver}</td>
                       <td class="px-4 py-3 text-sm text-gray-600">{network.Scope}</td>
+                      <td class="px-4 py-3">
+                        <button
+                          onclick={() => showInfo(network, 'network')}
+                          class="text-[#1f7d53] hover:text-[#186642] transition-colors"
+                          title="View Details"
+                        >
+                          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                          </svg>
+                        </button>
+                      </td>
                     </tr>
                   {/each}
                 </tbody>
@@ -234,3 +306,295 @@
     </div>
   </div>
 </div>
+
+<!-- Info Modal -->
+{#if showModal && selectedItem}
+  <div class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onclick={closeModal}>
+    <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-hidden" onclick={(e) => e.stopPropagation()}>
+      <div class="flex items-center justify-between p-6 border-b border-gray-200">
+        <h2 class="text-2xl font-bold text-gray-800">
+          {modalType === 'container' ? 'Container Details' : 
+           modalType === 'image' ? 'Image Details' : 
+           modalType === 'volume' ? 'Volume Details' : 
+           'Network Details'}
+        </h2>
+        <button onclick={closeModal} class="text-gray-400 hover:text-gray-600 transition-colors" aria-label="Close modal">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="p-6 overflow-y-auto max-h-[calc(90vh-140px)]">
+        {#if modalType === 'container'}
+          <div class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <p class="text-sm font-medium text-gray-500">Name</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Names?.[0]?.replace('/', '') || 'N/A'}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Container ID</p>
+                <p class="text-sm text-gray-800 font-mono mt-1">{selectedItem.Id?.substring(0, 12)}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Image</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Image}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Image ID</p>
+                <p class="text-sm text-gray-800 font-mono mt-1">{selectedItem.ImageID?.substring(7, 19)}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">State</p>
+                <p class="text-sm mt-1">
+                  <span class="px-2 py-1 text-xs rounded-full {selectedItem.State === 'running' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+                    {selectedItem.State}
+                  </span>
+                </p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Status</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Status}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Created</p>
+                <p class="text-sm text-gray-800 mt-1">{new Date(selectedItem.Created * 1000).toLocaleString()}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Command</p>
+                <p class="text-sm text-gray-800 font-mono mt-1">{selectedItem.Command}</p>
+              </div>
+            </div>
+            {#if selectedItem.Ports?.length > 0}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">Ports</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {#each selectedItem.Ports as port}
+                    <p class="text-sm text-gray-800">
+                      {port.IP || '0.0.0.0'}:{port.PublicPort || '-'} → {port.PrivatePort}/{port.Type}
+                    </p>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if selectedItem.Mounts?.length > 0}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">Mounts</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {#each selectedItem.Mounts as mount}
+                    <p class="text-sm text-gray-800">
+                      {mount.Source} → {mount.Destination} ({mount.Mode})
+                    </p>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if selectedItem.NetworkSettings?.Networks}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">Networks</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-2">
+                  {#each Object.entries(selectedItem.NetworkSettings.Networks) as [name, network]}
+                    <div>
+                      <p class="text-sm font-semibold text-gray-800">{name}</p>
+                      <p class="text-sm text-gray-600">IP: {(network as any).IPAddress || 'N/A'}</p>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+        {:else if modalType === 'image'}
+          <div class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <p class="text-sm font-medium text-gray-500">Repository</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.RepoTags?.[0]?.split(':')[0] || '<none>'}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Tag</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.RepoTags?.[0]?.split(':')[1] || '<none>'}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Image ID</p>
+                <p class="text-sm text-gray-800 font-mono mt-1">{selectedItem.Id?.substring(7, 19)}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Size</p>
+                <p class="text-sm text-gray-800 mt-1">{formatBytes(selectedItem.Size)}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Created</p>
+                <p class="text-sm text-gray-800 mt-1">{new Date(selectedItem.Created * 1000).toLocaleString()}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Virtual Size</p>
+                <p class="text-sm text-gray-800 mt-1">{formatBytes(selectedItem.VirtualSize)}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Containers</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Containers || 0}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Parent ID</p>
+                <p class="text-sm text-gray-800 font-mono mt-1">{selectedItem.ParentId?.substring(7, 19) || 'N/A'}</p>
+              </div>
+            </div>
+            {#if selectedItem.RepoTags?.length > 1}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">All Tags</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {#each selectedItem.RepoTags as tag}
+                    <p class="text-sm text-gray-800">{tag}</p>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if selectedItem.RepoDigests?.length > 0}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">Repo Digests</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {#each selectedItem.RepoDigests as digest}
+                    <p class="text-sm text-gray-800 font-mono break-all">{digest}</p>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+        {:else if modalType === 'volume'}
+          <div class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <p class="text-sm font-medium text-gray-500">Name</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Name}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Driver</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Driver}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Scope</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Scope}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Created</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.CreatedAt ? new Date(selectedItem.CreatedAt).toLocaleString() : 'N/A'}</p>
+              </div>
+            </div>
+            <div>
+              <p class="text-sm font-medium text-gray-500 mb-2">Mountpoint</p>
+              <div class="bg-gray-50 rounded-lg p-3">
+                <p class="text-sm text-gray-800 font-mono break-all">{selectedItem.Mountpoint}</p>
+              </div>
+            </div>
+            {#if selectedItem.Labels && Object.keys(selectedItem.Labels).length > 0}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">Labels</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {#each Object.entries(selectedItem.Labels) as [key, value]}
+                    <p class="text-sm text-gray-800"><span class="font-semibold">{key}:</span> {value}</p>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if selectedItem.Options && Object.keys(selectedItem.Options).length > 0}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">Options</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {#each Object.entries(selectedItem.Options) as [key, value]}
+                    <p class="text-sm text-gray-800"><span class="font-semibold">{key}:</span> {value}</p>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+        {:else if modalType === 'network'}
+          <div class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <p class="text-sm font-medium text-gray-500">Name</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Name}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Network ID</p>
+                <p class="text-sm text-gray-800 font-mono mt-1">{selectedItem.Id?.substring(0, 12)}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Driver</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Driver}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Scope</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Scope}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Internal</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Internal ? 'Yes' : 'No'}</p>
+              </div>
+              <div>
+                <p class="text-sm font-medium text-gray-500">Created</p>
+                <p class="text-sm text-gray-800 mt-1">{selectedItem.Created ? new Date(selectedItem.Created).toLocaleString() : 'N/A'}</p>
+              </div>
+            </div>
+            {#if selectedItem.IPAM?.Config?.length > 0}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">IPAM Config</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-2">
+                  {#each selectedItem.IPAM.Config as config}
+                    <div>
+                      <p class="text-sm text-gray-800"><span class="font-semibold">Subnet:</span> {config.Subnet || 'N/A'}</p>
+                      <p class="text-sm text-gray-800"><span class="font-semibold">Gateway:</span> {config.Gateway || 'N/A'}</p>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if selectedItem.Containers && Object.keys(selectedItem.Containers).length > 0}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">Connected Containers</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-2">
+                  {#each Object.entries(selectedItem.Containers) as [id, container]}
+                    <div>
+                      <p class="text-sm font-semibold text-gray-800">{(container as any).Name}</p>
+                      <p class="text-sm text-gray-600">IP: {(container as any).IPv4Address || 'N/A'}</p>
+                      <p class="text-sm text-gray-600 font-mono">MAC: {(container as any).MacAddress || 'N/A'}</p>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if selectedItem.Options && Object.keys(selectedItem.Options).length > 0}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">Options</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {#each Object.entries(selectedItem.Options) as [key, value]}
+                    <p class="text-sm text-gray-800"><span class="font-semibold">{key}:</span> {value}</p>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if selectedItem.Labels && Object.keys(selectedItem.Labels).length > 0}
+              <div>
+                <p class="text-sm font-medium text-gray-500 mb-2">Labels</p>
+                <div class="bg-gray-50 rounded-lg p-3 space-y-1">
+                  {#each Object.entries(selectedItem.Labels) as [key, value]}
+                    <p class="text-sm text-gray-800"><span class="font-semibold">{key}:</span> {value}</p>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
+      <div class="flex justify-end p-6 border-t border-gray-200">
+        <button
+          onclick={closeModal}
+          class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition-colors"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

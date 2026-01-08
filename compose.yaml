@@ -8,6 +8,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./harbory-backend:/app
+    environment:
+      - HARBORY_PASSWORD=${HARBORY_PASSWORD:-admin}
     privileged: true
     restart: always
     # for production

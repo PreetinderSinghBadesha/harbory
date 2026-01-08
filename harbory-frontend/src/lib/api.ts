@@ -24,9 +24,45 @@ interface ApiResponse<T> {
   error?: string;
 }
 
-async function fetchApi<T>(endpoint: string): Promise<ApiResponse<T>> {
+function getAuthToken(): string | null {
+  if (typeof window !== 'undefined') {
+    return localStorage.getItem('harbory_token');
+  }
+  return null;
+}
+
+function getAuthHeaders(): HeadersInit {
+  const token = getAuthToken();
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  };
+  
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
+  return headers;
+}
+
+async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
   try {
-    const response = await fetch(`${API_BASE_URL}${endpoint}`);
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        ...getAuthHeaders(),
+        ...options.headers,
+      },
+    });
+    
+    if (response.status === 401) {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('harbory_token');
+        window.location.href = '/login';
+      }
+      throw new Error('Unauthorized');
+    }
+    
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -76,4 +112,29 @@ export const nodeApi = {
 
 export const healthApi = {
   check: () => fetchApi<any>('/health')
+};
+
+export const systemApi = {
+  getStats: () => fetchApi<any>('/system/stats')
+};
+
+export const authApi = {
+  login: async (password: string) => {
+    return fetchApi<{ token: string; message: string }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    });
+  },
+  logout: async () => {
+    return fetchApi<{ message: string }>('/auth/logout', {
+      method: 'POST',
+    });
+  },
+  verify: () => fetchApi<{ message: string }>('/auth/verify'),
+  changePassword: async (oldPassword: string, newPassword: string) => {
+    return fetchApi<{ message: string }>('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    });
+  },
 };

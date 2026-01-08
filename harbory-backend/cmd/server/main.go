@@ -11,12 +11,14 @@ import (
         "time"
 
         "github.com/PreetinderSinghBadesha/harbory/internal/config"
+        "github.com/PreetinderSinghBadesha/harbory/internal/middleware"
         "github.com/PreetinderSinghBadesha/harbory/internal/router"
 )
 
 func main() {
     cfg := config.MustLoad()
     startTime := time.Now().UTC()
+    middleware.InitSessionStore(cfg)
 
     mux := router.Router(startTime)
 

@@ -1,12 +1,25 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { containerApi, imageApi, volumeApi, networkApi } from '$lib/api';
+  import { onMount, onDestroy } from 'svelte';
+  import { containerApi, imageApi, volumeApi, networkApi, systemApi } from '$lib/api';
 
   let containers: any[] = $state([]);
   let images: any[] = $state([]);
   let volumes: any[] = $state([]);
   let networks: any[] = $state([]);
+  let systemStats: any = $state(null);
   let loading = $state(true);
+  let refreshInterval: number | null = null;
+
+  async function fetchSystemStats() {
+    try {
+      const statsRes = await systemApi.getStats();
+      if (statsRes.data) {
+        systemStats = statsRes.data;
+      }
+    } catch (error) {
+      console.error('Error fetching system stats:', error);
+    }
+  }
 
   onMount(async () => {
     try {
@@ -21,12 +34,31 @@
       images = imagesRes.data || [];
       volumes = volumesRes.data?.Volumes || [];
       networks = networksRes.data || [];
+
+      await fetchSystemStats();
+      
+      refreshInterval = window.setInterval(fetchSystemStats, 5000);
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
       loading = false;
     }
   });
+
+  onDestroy(() => {
+    if (refreshInterval) {
+      clearInterval(refreshInterval);
+    }
+  });
+
+  function formatBytes(bytes: number, decimals = 2) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  }
 </script>
 
 <div class="space-y-6">
@@ -101,6 +133,158 @@
         </div>
       </div>
     </div>
+
+    <!-- System Monitoring Section -->
+    {#if systemStats}
+    <div class="bg-white rounded-lg shadow-md p-6">
+      <h2 class="text-xl font-bold text-gray-800 mb-4">System Monitoring</h2>
+      
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- CPU Card -->
+        <div class="border border-gray-200 rounded-lg p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-gray-700">CPU</h3>
+            <div class="bg-indigo-100 rounded-full p-2">
+              <svg class="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path>
+              </svg>
+            </div>
+          </div>
+          <div class="space-y-2">
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Cores:</span>
+              <span class="font-semibold text-gray-800">{systemStats.cpu.cores}</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Goroutines:</span>
+              <span class="font-semibold text-gray-800">{systemStats.cpu.goroutines}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Memory Card -->
+        <div class="border border-gray-200 rounded-lg p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-gray-700">Memory</h3>
+            <div class="bg-pink-100 rounded-full p-2">
+              <svg class="w-4 h-4 text-pink-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path>
+              </svg>
+            </div>
+          </div>
+          <div class="space-y-2">
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Total:</span>
+              <span class="font-semibold text-gray-800">{systemStats.memory.total_mb} MB</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Used:</span>
+              <span class="font-semibold text-gray-800">{systemStats.memory.used_mb} MB</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Free:</span>
+              <span class="font-semibold text-gray-800">{systemStats.memory.free_mb} MB</span>
+            </div>
+            <div class="mt-3">
+              <div class="flex justify-between text-xs text-gray-600 mb-1">
+                <span>Usage</span>
+                <span>{systemStats.memory.usage_percent.toFixed(1)}%</span>
+              </div>
+              <div class="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  class="h-2 rounded-full transition-all duration-500"
+                  class:bg-green-500={systemStats.memory.usage_percent < 60}
+                  class:bg-yellow-500={systemStats.memory.usage_percent >= 60 && systemStats.memory.usage_percent < 80}
+                  class:bg-red-500={systemStats.memory.usage_percent >= 80}
+                  style="width: {systemStats.memory.usage_percent}%"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Disk Card -->
+        <div class="border border-gray-200 rounded-lg p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-gray-700">Disk</h3>
+            <div class="bg-cyan-100 rounded-full p-2">
+              <svg class="w-4 h-4 text-cyan-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+              </svg>
+            </div>
+          </div>
+          <div class="space-y-2">
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Total:</span>
+              <span class="font-semibold text-gray-800">{systemStats.disk.total_gb} GB</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Used:</span>
+              <span class="font-semibold text-gray-800">{systemStats.disk.used_gb} GB</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Free:</span>
+              <span class="font-semibold text-gray-800">{systemStats.disk.free_gb} GB</span>
+            </div>
+            <div class="mt-3">
+              <div class="flex justify-between text-xs text-gray-600 mb-1">
+                <span>Usage</span>
+                <span>{systemStats.disk.usage_percent.toFixed(1)}%</span>
+              </div>
+              <div class="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  class="h-2 rounded-full transition-all duration-500"
+                  class:bg-green-500={systemStats.disk.usage_percent < 60}
+                  class:bg-yellow-500={systemStats.disk.usage_percent >= 60 && systemStats.disk.usage_percent < 80}
+                  class:bg-red-500={systemStats.disk.usage_percent >= 80}
+                  style="width: {systemStats.disk.usage_percent}%"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Docker System Info -->
+      <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="border border-gray-200 rounded-lg p-4">
+          <h3 class="text-sm font-semibold text-gray-700 mb-3">Docker Info</h3>
+          <div class="space-y-2">
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Docker Version:</span>
+              <span class="font-semibold text-gray-800">{systemStats.docker.version}</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">API Version:</span>
+              <span class="font-semibold text-gray-800">{systemStats.docker.server_version}</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Running Containers:</span>
+              <span class="font-semibold text-gray-800">{systemStats.docker.containers_running} / {systemStats.docker.containers_total}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="border border-gray-200 rounded-lg p-4">
+          <h3 class="text-sm font-semibold text-gray-700 mb-3">System Info</h3>
+          <div class="space-y-2">
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">OS:</span>
+              <span class="font-semibold text-gray-800">{systemStats.system.os}</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Architecture:</span>
+              <span class="font-semibold text-gray-800">{systemStats.system.architecture}</span>
+            </div>
+            <div class="flex justify-between text-sm">
+              <span class="text-gray-600">Total Images:</span>
+              <span class="font-semibold text-gray-800">{systemStats.docker.images}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {/if}
 
     <!-- Recent Containers -->
     <div class="bg-white rounded-lg shadow-md p-6">

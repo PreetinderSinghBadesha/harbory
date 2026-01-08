@@ -2,11 +2,20 @@
   import { onMount } from 'svelte';
   import harboryLogo from '$lib/assets/harbory-logo.png';
 
-  onMount(() => {
-    // Redirect to dashboard after a short delay
-    setTimeout(() => {
-      window.location.href = '/dashboard';
-    }, 2000);
+  onMount(async () => {
+    try {
+      const response = await fetch('/api/auth/verify', {
+        credentials: 'include'
+      });
+      
+      if (response.ok) {
+        window.location.href = '/dashboard';
+      } else {
+        window.location.href = '/login';
+      }
+    } catch (err) {
+      window.location.href = '/login';
+    }
   });
 </script>
 
@@ -19,7 +28,7 @@
     </div>
     <div class="flex items-center justify-center gap-2 text-gray-500">
       <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-[#1f7d53]"></div>
-      <span>Redirecting to dashboard...</span>
+      <span>Loading...</span>
     </div>
   </div>
 </div>

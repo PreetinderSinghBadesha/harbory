@@ -32,3 +32,18 @@ func GeneralErrorResponse(err error) Response {
 		Error:  err.Error(),
 	}
 }
+
+func SendJSON(w http.ResponseWriter, statusCode int, data interface{}) {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(statusCode)
+json.NewEncoder(w).Encode(data)
+}
+
+func SendError(w http.ResponseWriter, statusCode int, message string) {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(statusCode)
+json.NewEncoder(w).Encode(Response{
+Status: StatusError,
+Error:  message,
+})
+}
