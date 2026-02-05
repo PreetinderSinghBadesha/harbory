@@ -3,6 +3,7 @@ package router
 import (
 	"net/http"
 	"time"
+
 	"github.com/PreetinderSinghBadesha/harbory/internal/http/handler"
 	"github.com/PreetinderSinghBadesha/harbory/internal/middleware"
 )
@@ -20,7 +21,7 @@ func Router(startTime time.Time) *http.ServeMux {
 	// Protected routes (authentication required)
 	mux.HandleFunc("/api/auth/logout", middleware.AuthMiddleware(handler.LogoutHandler()))
 	mux.HandleFunc("POST /api/auth/logout", middleware.AuthMiddleware(handler.LogoutHandler()))
-	
+
 	mux.HandleFunc("/api/auth/change-password", middleware.AuthMiddleware(handler.ChangePasswordHandler()))
 	mux.HandleFunc("POST /api/auth/change-password", middleware.AuthMiddleware(handler.ChangePasswordHandler()))
 
@@ -47,6 +48,10 @@ func Router(startTime time.Time) *http.ServeMux {
 	//router for deployment
 	mux.HandleFunc("POST /api/deploy", middleware.AuthMiddleware(handler.DeployGithubHandler()))
 	mux.Handle("/api/deploy/ws", middleware.AuthMiddlewareHandler(handler.DeployWebSocketHandler()))
+
+	//router for GitHub
+	mux.HandleFunc("POST /api/github/search", handler.GithubSearchHandler())
+	mux.HandleFunc("POST /api/github/user/repos", handler.GithubUserReposHandler())
 
 	//router for system stats
 	mux.HandleFunc("GET /api/system/stats", middleware.AuthMiddleware(handler.GetSystemStatsHandler()))

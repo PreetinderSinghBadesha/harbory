@@ -10,7 +10,7 @@ import (
 )
 
 type DeployMessage struct {
-	Type    string `json:"type"`    // "status", "log", "error", "success"
+	Type    string `json:"type"` // "status", "log", "error", "success"
 	Message string `json:"message"`
 	Step    string `json:"step,omitempty"` // "cloning", "building", "running"
 }
@@ -39,6 +39,7 @@ func DeployWebSocketHandler() http.Handler {
 			HasDockerfile:  req.HasDockerfile,
 			DockerfilePath: req.DockerfilePath,
 			Framework:      req.Framework,
+			GithubToken:    req.GithubToken,
 		}
 
 		logChan := make(chan string, 100)

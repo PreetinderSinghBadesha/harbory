@@ -12,6 +12,7 @@ type DeployRequest struct {
 	HasDockerfile  bool   `json:"has_dockerfile"`
 	DockerfilePath string `json:"dockerfile_path"`
 	Framework      string `json:"framework"`
+	GithubToken    string `json:"github_token,omitempty"`
 }
 
 func DeployGithubHandler() http.HandlerFunc {
@@ -28,6 +29,7 @@ func DeployGithubHandler() http.HandlerFunc {
 			HasDockerfile:  req.HasDockerfile,
 			DockerfilePath: req.DockerfilePath,
 			Framework:      req.Framework,
+			GithubToken:    req.GithubToken,
 		}
 
 		err := deploy.DeployFromPayload(payload)

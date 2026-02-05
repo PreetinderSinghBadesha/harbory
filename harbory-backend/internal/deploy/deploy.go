@@ -14,6 +14,7 @@ type DeployPayload struct {
 	HasDockerfile  bool
 	DockerfilePath string
 	Framework      string
+	GithubToken    string
 }
 
 func DeployFromPayload(p DeployPayload) error {
@@ -46,7 +47,14 @@ func DeployFromPayloadWithProgress(p DeployPayload, logChan chan<- string) error
 	}
 
 	sendLog(fmt.Sprintf("Cloning repository: %s", p.RepoUrl))
-	if err := runWithProgress("git", logChan, "clone", p.RepoUrl); err != nil {
+
+	cloneUrl := p.RepoUrl
+	if p.GithubToken != "" && strings.Contains(p.RepoUrl, "github.com") {
+		cloneUrl = strings.Replace(p.RepoUrl, "https://github.com", fmt.Sprintf("https://x-access-token:%s@github.com", p.GithubToken), 1)
+		sendLog("Using authenticated clone for private repository")
+	}
+
+	if err := runWithProgress("git", logChan, "clone", cloneUrl); err != nil {
 		return fmt.Errorf("failed to clone repository: %w", err)
 	}
 
@@ -87,11 +95,11 @@ func run(name string, args ...string) error {
 
 func runWithProgress(name string, logChan chan<- string, args ...string) error {
 	cmd := exec.Command(name, args...)
-	
+
 	if logChan != nil {
 		stdout, _ := cmd.StdoutPipe()
 		stderr, _ := cmd.StderrPipe()
-		
+
 		if err := cmd.Start(); err != nil {
 			return err
 		}
@@ -109,10 +117,10 @@ func runWithProgress(name string, logChan chan<- string, args ...string) error {
 				logChan <- scanner.Text()
 			}
 		}()
-		
+
 		return cmd.Wait()
 	}
-	
+
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -142,7 +150,6 @@ func buildAndRunWithProgress(name, dockerfilePath string, logChan chan<- string)
 	sendLog(fmt.Sprintf("Checking for existing container: %s", name))
 	exec.Command("docker", "rm", "-f", name).Run()
 
-
 	sendLog(fmt.Sprintf("Cleaning up old images..."))
 	exec.Command("docker", "rmi", "-f", name).Run()
 
@@ -154,14 +161,14 @@ func buildAndRunWithProgress(name, dockerfilePath string, logChan chan<- string)
 
 	sendLog(fmt.Sprintf("Detecting exposed ports..."))
 	ports := detectExposedPorts(name, logChan)
-	
+
 	runArgs := []string{"run", "-d", "--name", name}
-	
+
 	for _, port := range ports {
 		runArgs = append(runArgs, "-p", fmt.Sprintf("%s:%s", port, port))
 		sendLog(fmt.Sprintf("Mapping port: %s -> %s", port, port))
 	}
-	
+
 	runArgs = append(runArgs, name)
 
 	sendLog(fmt.Sprintf("Starting container: %s", name))
@@ -199,7 +206,6 @@ func detectExposedPorts(imageName string, logChan chan<- string) []string {
 			}
 		}
 	}
-	
+
 	return ports
 }
-
