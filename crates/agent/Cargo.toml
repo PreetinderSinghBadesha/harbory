@@ -1,0 +1,13 @@
+[package]
+name = "harbory-agent"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+harbory-protocol = { path = "../protocol" }
+harbory-common = { path = "../common" }
+tokio = { workspace = true }
+tonic = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

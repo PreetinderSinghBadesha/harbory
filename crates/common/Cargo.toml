@@ -1,0 +1,13 @@
+[package]
+name = "harbory-common"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

@@ -1,0 +1,14 @@
+[package]
+name = "harbory-protocol"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+tonic = { workspace = true }
+prost = { workspace = true }
+
+[build-dependencies]
+# tonic-build shells out to `protoc`; protoc-bin-vendored ships a prebuilt
+# binary so contributors don't need protoc installed system-wide.
+tonic-build = "0.12"
+protoc-bin-vendored = "3"

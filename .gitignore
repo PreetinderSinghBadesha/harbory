@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+
+# Local dev artifacts: generated keys and credentials should never be committed.
+*-signing-key
+agent-key
+agent-credential
+control-plane-signing-key

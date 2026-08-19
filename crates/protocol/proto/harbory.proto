@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package harbory.v1;
+
+// PairingService is used exactly once per agent: to bootstrap trust between
+// a brand-new agent and the control plane using a short-lived pairing token.
+// Every subsequent interaction uses the long-lived credential issued here.
+service PairingService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+}
+
+message RegisterRequest {
+  // Single-use pairing token displayed/copied from the dashboard.
+  string pairing_token = 1;
+  // Agent's Ed25519 public key, generated locally before this call is made.
+  bytes public_key = 2;
+}
+
+message RegisterResponse {
+  // Server-assigned identity for this agent, stable for its lifetime.
+  string agent_id = 1;
+  string account_id = 2;
+  // Ed25519-signed credential binding agent_id <-> account_id <->
+  // public_key_fingerprint. Opaque to the agent; presented on every future
+  // connection. See /docs/security.md for the exact payload layout.
+  bytes credential = 3;
+  // Control plane's Ed25519 public key, so the agent can locally sanity
+  // check the credential signature without a round trip.
+  bytes control_plane_public_key = 4;
+}
