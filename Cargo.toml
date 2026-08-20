@@ -13,6 +13,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
 tonic = "0.12"
 prost = "0.13"
 serde = { version = "1", features = ["derive"] }

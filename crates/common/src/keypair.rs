@@ -5,6 +5,7 @@ use std::path::Path;
 
 /// An Ed25519 keypair. Used both by agents (identity) and by the control
 /// plane (credential signing) — same primitive, different roles.
+#[derive(Clone)]
 pub struct Keypair {
     signing_key: SigningKey,
 }

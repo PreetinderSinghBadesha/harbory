@@ -28,3 +28,64 @@ message RegisterResponse {
   // check the credential signature without a round trip.
   bytes control_plane_public_key = 4;
 }
+
+// AgentStreamService carries the single persistent, authenticated channel
+// between an already-paired agent and the control plane: connect-time
+// handshake, heartbeats now, and (in later phases) command dispatch and
+// state reporting over this same stream rather than separate RPCs.
+service AgentStreamService {
+  // Named Stream rather than Connect: tonic's generated client already has
+  // an associated `connect(dst)` constructor and the names collide.
+  rpc Stream(stream AgentMessage) returns (stream ControlPlaneMessage);
+}
+
+// Handshake, in order: Hello -> (server) Challenge -> ChallengeResponse ->
+// (server) Welcome -> Heartbeat*. See /docs/connection-lifecycle.md.
+message AgentMessage {
+  oneof payload {
+    Hello hello = 1;
+    ChallengeResponse challenge_response = 2;
+    Heartbeat heartbeat = 3;
+  }
+}
+
+message ControlPlaneMessage {
+  oneof payload {
+    Challenge challenge = 1;
+    Welcome welcome = 2;
+    HeartbeatAck heartbeat_ack = 3;
+  }
+}
+
+message Hello {
+  // The long-lived credential from RegisterResponse. Presenting it proves
+  // the control plane issued it; it does not by itself prove the caller
+  // holds the matching private key — that's what Challenge/ChallengeResponse
+  // is for.
+  bytes credential = 1;
+}
+
+message Challenge {
+  // Random bytes, unique per connection attempt. The agent must sign these
+  // exact bytes with its identity private key to prove possession.
+  bytes nonce = 1;
+}
+
+message ChallengeResponse {
+  // Ed25519 signature over the Challenge.nonce bytes.
+  bytes signature = 1;
+}
+
+message Welcome {
+  string agent_id = 1;
+  uint32 heartbeat_interval_seconds = 2;
+  uint32 missed_heartbeat_threshold = 3;
+}
+
+message Heartbeat {
+  // Informational only (clock skew possible) — the control plane's own
+  // receive time is the source of truth for online/offline computation.
+  int64 timestamp = 1;
+}
+
+message HeartbeatAck {}

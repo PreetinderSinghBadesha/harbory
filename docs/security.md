@@ -78,22 +78,32 @@ the persistent stream doesn't exist until Phase 2. What it checks:
    logged to `audit_log` as `credential_fingerprint_mismatch` (the
    "stronger alert" §3 calls for — again, delivery mechanism is Phase 6).
 
-### Deferred to Phase 2: proof of possession
+### Implemented in Phase 2: proof of possession
 
 Presenting a valid, unrevoked, fingerprint-matching credential proves the
 credential is genuine — it does not by itself prove the *caller* holds the
 matching private key (a stolen credential file would pass all four checks
-above). Phase 2, when the persistent stream is built, must add: the control
-plane sends a fresh challenge/nonce, the agent signs it with its private
-key, and the control plane verifies that signature against the public key
-on file before treating the stream as authenticated. This file exists
-precisely so that requirement isn't lost between phases.
+above). `AgentStreamService.Stream` (`crates/control-plane/src/stream.rs`)
+closes this: after `verify_agent_credential` succeeds, the control plane
+sends a fresh random 32-byte nonce (`Challenge`), the agent signs it with
+its identity private key (`ChallengeResponse`), and the control plane
+verifies that signature against the *stored* public key for that
+`agent_id` (not a key embedded in the credential — the credential only
+carries a fingerprint) before sending `Welcome` and treating the stream as
+authenticated. A 10-second timeout on the response prevents a slow/hung
+client from holding a half-open connection. Full sequence diagram in
+`docs/connection-lifecycle.md`.
 
-### Deferred to Phase 2: transport TLS
+### Still deferred: transport TLS
 
 Wiring rustls into the tonic server (and pinning/verifying the control
-plane's TLS identity on the agent side) happens alongside the persistent
-stream, not for the one-shot `Register` RPC.
+plane's TLS identity on the agent side) was explicitly deferred again in
+Phase 2 — the roadmap's Phase 2 checklist doesn't call for it, and challenge
+signing above already closes the more security-critical gap (proving
+private-key possession) independent of transport encryption. The stream
+still runs over plaintext h2c, so it remains vulnerable to a network-level
+eavesdropper/MITM until this is picked up — tracked as an open question in
+`HARBORY_README.md` §8.
 
 ## Revocation
 

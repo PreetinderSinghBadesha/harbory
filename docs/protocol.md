@@ -1,14 +1,16 @@
-# Protocol (Phase 1)
+# Protocol
 
 Wire protocol lives in [`crates/protocol`](../crates/protocol), generated from
 [`proto/harbory.proto`](../crates/protocol/proto/harbory.proto) via `tonic-build`.
 `protoc` is vendored at build time (`protoc-bin-vendored`) so no system install
 is required.
 
-Phase 1 defines exactly one service, `PairingService`, used once per agent to
-bootstrap trust. The persistent bi-directional stream (heartbeats, commands)
-is a Phase 2/3 addition to this same crate — it is not in this file yet
-because Phase 1 explicitly should not build ahead of its scope.
+Two services so far: `PairingService` (Phase 1, one-shot bootstrap) and
+`AgentStreamService` (Phase 2, the persistent connection). Command dispatch
+and state reporting (Phase 3+) will extend `AgentStreamService`'s existing
+`AgentMessage`/`ControlPlaneMessage` oneofs with new variants rather than
+adding new RPCs — that's the whole point of the "single persistent
+authenticated channel" design.
 
 ## `PairingService.Register`
 
@@ -57,8 +59,54 @@ protocol — no message type wraps them, they're a flat `bytes` field. Layout
 is the control plane's Ed25519 signature over the 72-byte payload. See
 `docs/security.md` for what's checked and when.
 
+## `AgentStreamService.Stream`
+
+Bidirectional streaming RPC — named `Stream`, not `Connect`: tonic's
+generated client already has an associated `connect(dst)` constructor and
+the names collided (`E0592: duplicate definitions with name 'connect'`).
+Carries the connect-time handshake and, once authenticated, periodic
+heartbeats. Full handshake sequence, timeout, and rationale for the
+challenge/response step: [`connection-lifecycle.md`](connection-lifecycle.md).
+
+```proto
+rpc Stream(stream AgentMessage) returns (stream ControlPlaneMessage);
+
+message AgentMessage {
+  oneof payload {
+    Hello hello = 1;
+    ChallengeResponse challenge_response = 2;
+    Heartbeat heartbeat = 3;
+  }
+}
+
+message ControlPlaneMessage {
+  oneof payload {
+    Challenge challenge = 1;
+    Welcome welcome = 2;
+    HeartbeatAck heartbeat_ack = 3;
+  }
+}
+```
+
+`Hello.credential` is the opaque credential from `RegisterResponse`.
+`Welcome` carries the heartbeat interval and missed-heartbeat threshold the
+control plane wants this agent to use — not hardcoded agent-side, so it can
+change without an agent redeploy.
+
+### A gotcha worth remembering for future streaming RPCs
+
+The first implementation of this handler tried to send `Challenge` and read
+`ChallengeResponse` *before* returning `Response::new(stream)` — but a
+streaming RPC's response headers (and so the client's read side) don't
+flush until the handler actually returns. Both sides ended up blocked
+waiting on each other forever. Fix: return the response stream immediately,
+and do all handshake/heartbeat logic in a spawned task that reports
+failures as `Err(Status)` *items* on the stream rather than as the
+handler's own return value. See `crates/control-plane/src/stream.rs`
+(`drive_connection`) for the pattern.
+
 ## Not yet defined (later phases)
 
-- Persistent stream service (heartbeats, command dispatch, state reporting) — Phase 2/3.
+- Command dispatch and state reporting, as new `AgentMessage`/`ControlPlaneMessage` variants — Phase 3.
 - Container command messages — Phase 3.
 - Proxy config command messages — Phase 4.
