@@ -6,6 +6,10 @@ version.workspace = true
 [dependencies]
 tonic = { workspace = true }
 prost = { workspace = true }
+# Backs proxy_hash: the control plane and agent must compute the identical
+# hash of a route set independently, so the hash function lives here
+# rather than being reimplemented on each side.
+sha2 = { workspace = true }
 
 [build-dependencies]
 # tonic-build shells out to `protoc`; protoc-bin-vendored ships a prebuilt

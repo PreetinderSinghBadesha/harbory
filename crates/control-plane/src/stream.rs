@@ -2,11 +2,14 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use harbory_common::keypair::{verify, Keypair};
-use harbory_protocol::v1::{
-    agent_message::Payload as AgentPayload, agent_stream_service_server::AgentStreamService,
-    container_command::Action as ContainerAction, control_plane_message::Payload as ControlPlanePayload,
-    AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, Heartbeat as HeartbeatMsg,
-    HeartbeatAck, PortMapping as ProtoPortMapping, Welcome,
+use harbory_protocol::{
+    proxy_hash,
+    v1::{
+        agent_message::Payload as AgentPayload, agent_stream_service_server::AgentStreamService,
+        container_command::Action as ContainerAction, control_plane_message::Payload as ControlPlanePayload,
+        AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, Heartbeat as HeartbeatMsg,
+        HeartbeatAck, PortMapping as ProtoPortMapping, ProxyConfig, Welcome,
+    },
 };
 use rand::RngCore;
 use tokio::sync::mpsc;
@@ -98,6 +101,38 @@ async fn reconcile_and_dispatch(
         }
     }
     true
+}
+
+/// Persists what the agent reports it has applied, and — if that doesn't
+/// match the hash of current desired state — sends the full desired route
+/// set back down. Same "converge on report, not on instant push" pattern
+/// as containers; see docs/proxy-management.md. Returns `false` if the
+/// connection died mid-send.
+async fn reconcile_proxy_and_dispatch(
+    store: &Store,
+    agent_id: uuid::Uuid,
+    applied_hash: Vec<u8>,
+    error: Option<String>,
+    tx: &Outbound,
+) -> bool {
+    if let Err(err) = store.record_proxy_state(agent_id, &applied_hash, error.as_deref()).await {
+        tracing::warn!(%agent_id, ?err, "failed to persist proxy state");
+        return true;
+    }
+
+    let desired = match store.get_desired_proxy_routes(agent_id).await {
+        Ok(desired) => desired,
+        Err(err) => {
+            tracing::warn!(%agent_id, ?err, "failed to load desired proxy routes");
+            return true;
+        }
+    };
+
+    if proxy_hash::hash_routes(&desired).as_slice() == applied_hash.as_slice() {
+        return true; // already converged
+    }
+
+    tx.send(frame(ControlPlanePayload::ProxyConfig(ProxyConfig { routes: desired }))).await.is_ok()
 }
 
 /// Everything that happens on one connection, after the response stream
@@ -210,6 +245,12 @@ async fn drive_connection(
             Some(Ok(AgentMessage { payload: Some(AgentPayload::StateReport(report)) })) => {
                 let observed: Vec<ObservedContainer> = report.containers.into_iter().map(observed_from_proto).collect();
                 if !reconcile_and_dispatch(&store, agent_id, observed, &tx).await {
+                    break;
+                }
+            }
+            Some(Ok(AgentMessage { payload: Some(AgentPayload::ProxyState(state)) })) => {
+                let error = if state.error.is_empty() { None } else { Some(state.error) };
+                if !reconcile_proxy_and_dispatch(&store, agent_id, state.applied_hash, error, &tx).await {
                     break;
                 }
             }

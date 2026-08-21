@@ -1,20 +1,44 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use harbory_common::keypair::Keypair;
-use harbory_protocol::v1::{
-    agent_stream_service_client::AgentStreamServiceClient, container_command::Action as ContainerAction,
-    control_plane_message::Payload as ControlPlanePayload, AgentMessage, ChallengeResponse, ContainerStateReport,
-    Heartbeat, Hello,
+use harbory_protocol::{
+    proxy_hash,
+    v1::{
+        agent_stream_service_client::AgentStreamServiceClient, container_command::Action as ContainerAction,
+        control_plane_message::Payload as ControlPlanePayload, AgentMessage, ChallengeResponse, ContainerStateReport,
+        Heartbeat, Hello, ProxyState,
+    },
 };
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 
 use crate::container::ContainerManager;
+use crate::proxy::ProxyManager;
+
+/// What this agent believes it has last (successfully or not) applied to
+/// Nginx — compared against the control plane's desired-state hash to
+/// decide whether a fresh `ProxyConfig` is needed. Reset fresh on every
+/// reconnect, same as everything else in `run_stream`'s scope.
+struct ProxyReportState {
+    applied_hash: Vec<u8>,
+    last_error: Option<String>,
+}
 
 async fn send_state_report(tx: &mpsc::Sender<AgentMessage>, containers: &ContainerManager) -> anyhow::Result<()> {
     let containers = containers.list_state().await?;
     tx.send(AgentMessage {
         payload: Some(harbory_protocol::v1::agent_message::Payload::StateReport(ContainerStateReport { containers })),
+    })
+    .await?;
+    Ok(())
+}
+
+async fn send_proxy_state_report(tx: &mpsc::Sender<AgentMessage>, state: &ProxyReportState) -> anyhow::Result<()> {
+    tx.send(AgentMessage {
+        payload: Some(harbory_protocol::v1::agent_message::Payload::ProxyState(ProxyState {
+            applied_hash: state.applied_hash.clone(),
+            error: state.last_error.clone().unwrap_or_default(),
+        })),
     })
     .await?;
     Ok(())
@@ -30,6 +54,7 @@ pub async fn run_stream(
     identity: &Keypair,
     credential: &[u8],
     containers: &ContainerManager,
+    proxy: &ProxyManager,
 ) -> anyhow::Result<()> {
     let mut client = AgentStreamServiceClient::connect(control_plane_addr.to_string()).await?;
 
@@ -73,11 +98,21 @@ pub async fn run_stream(
 
     tracing::info!(agent_id, heartbeat_interval_seconds, "stream authenticated, sending heartbeats");
 
+    // Nothing applied yet this connection — an empty Vec is deliberately
+    // distinct from hash_routes(&[]) (a real 32-byte hash), so the very
+    // first report always mismatches and the control plane sends whatever
+    // it considers desired, even if that's an empty route set. That first
+    // round trip establishes a verified baseline.
+    let mut proxy_state = ProxyReportState { applied_hash: Vec::new(), last_error: None };
+
     // Report current state right away so any desired-state changes made
     // while this agent was disconnected converge as soon as possible,
     // rather than waiting for the first periodic tick.
     if let Err(err) = send_state_report(&tx, containers).await {
         tracing::warn!(%err, "failed to send initial container state report");
+    }
+    if let Err(err) = send_proxy_state_report(&tx, &proxy_state).await {
+        tracing::warn!(%err, "failed to send initial proxy state report");
     }
 
     let mut ticker = tokio::time::interval(Duration::from_secs(heartbeat_interval_seconds as u64));
@@ -96,28 +131,52 @@ pub async fn run_stream(
                 if let Err(err) = send_state_report(&tx, containers).await {
                     tracing::warn!(%err, "failed to send periodic container state report");
                 }
+                if let Err(err) = send_proxy_state_report(&tx, &proxy_state).await {
+                    tracing::warn!(%err, "failed to send periodic proxy state report");
+                }
             }
             msg = inbound.next() => {
                 match msg {
                     Some(Ok(control_plane_msg)) => {
-                        if let Some(ControlPlanePayload::Command(cmd)) = control_plane_msg.payload {
-                            // Report immediately only on success, for fast
-                            // convergence visibility. On failure, don't —
-                            // the control plane will just re-send the same
-                            // command on the very next report, and with no
-                            // delay between "report" and "retry" that's an
-                            // unbounded-rate retry loop against Docker for
-                            // a persistently broken spec (found this the
-                            // hard way against a real daemon). Skipping the
-                            // immediate report here means a failure is only
-                            // retried at the periodic cadence instead.
-                            if execute_command(containers, cmd).await {
-                                if let Err(err) = send_state_report(&tx, containers).await {
-                                    tracing::warn!(%err, "failed to send post-command container state report");
+                        match control_plane_msg.payload {
+                            Some(ControlPlanePayload::Command(cmd)) => {
+                                // Report immediately only on success, for fast
+                                // convergence visibility. On failure, don't —
+                                // the control plane will just re-send the same
+                                // command on the very next report, and with no
+                                // delay between "report" and "retry" that's an
+                                // unbounded-rate retry loop against Docker for
+                                // a persistently broken spec (found this the
+                                // hard way against a real daemon). Skipping the
+                                // immediate report here means a failure is only
+                                // retried at the periodic cadence instead.
+                                if execute_command(containers, cmd).await {
+                                    if let Err(err) = send_state_report(&tx, containers).await {
+                                        tracing::warn!(%err, "failed to send post-command container state report");
+                                    }
                                 }
                             }
+                            Some(ControlPlanePayload::ProxyConfig(cfg)) => {
+                                // Same success-only-immediate-report rule as
+                                // container commands, and for the same reason.
+                                match proxy.apply(&cfg.routes).await {
+                                    Ok(()) => {
+                                        proxy_state.applied_hash = proxy_hash::hash_routes(&cfg.routes).to_vec();
+                                        proxy_state.last_error = None;
+                                        if let Err(err) = send_proxy_state_report(&tx, &proxy_state).await {
+                                            tracing::warn!(%err, "failed to send post-apply proxy state report");
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(%err, "failed to apply proxy config");
+                                        proxy_state.last_error = Some(err.to_string());
+                                    }
+                                }
+                            }
+                            _ => {
+                                // HeartbeatAck and anything else: nothing to do.
+                            }
                         }
-                        // HeartbeatAck and anything else: nothing to do.
                     }
                     Some(Err(err)) => anyhow::bail!("stream error: {err}"),
                     None => anyhow::bail!("stream closed by control plane"),

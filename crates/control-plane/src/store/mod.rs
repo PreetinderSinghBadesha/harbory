@@ -2,6 +2,7 @@ mod agents;
 mod audit;
 mod containers;
 mod pairing;
+mod proxy;
 mod registration;
 
 pub use agents::AgentRecord;

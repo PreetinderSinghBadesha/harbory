@@ -5,3 +5,5 @@
 pub mod v1 {
     tonic::include_proto!("harbory.v1");
 }
+
+pub mod proxy_hash;

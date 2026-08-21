@@ -49,6 +49,7 @@ message AgentMessage {
     ChallengeResponse challenge_response = 2;
     Heartbeat heartbeat = 3;
     ContainerStateReport state_report = 4;
+    ProxyState proxy_state = 5;
   }
 }
 
@@ -58,6 +59,7 @@ message ControlPlaneMessage {
     Welcome welcome = 2;
     HeartbeatAck heartbeat_ack = 3;
     ContainerCommand command = 4;
+    ProxyConfig proxy_config = 5;
   }
 }
 
@@ -148,4 +150,44 @@ message ContainerState {
 // same cadence as heartbeats.
 message ContainerStateReport {
   repeated ContainerState containers = 1;
+}
+
+// --- Phase 4: reverse proxy management ------------------------------------
+//
+// One route = one Nginx `server{}` block (name-based virtual hosting).
+// v1 does not merge multiple routes sharing a server_name+listen_port into
+// one block with several `location`s — keep server_name distinct per
+// route. See /docs/proxy-management.md.
+
+message ProxyRoute {
+  // Logical name, unique per agent. Presence in the desired set *is* "this
+  // route should exist" — unlike containers there's no separate
+  // running/absent status, because the whole config file is regenerated
+  // from the full route set on every apply (see ProxyConfig).
+  string name = 1;
+  // Host header to match. Empty = catch-all (`server_name _;`).
+  string server_name = 2;
+  uint32 listen_port = 3;
+  // Default "/" if empty.
+  string path_prefix = 4;
+  string upstream_host = 5;
+  uint32 upstream_port = 6;
+}
+
+// Always the full desired set, not a delta — same rationale as
+// ContainerStateReport: regenerating the whole config file from a
+// complete snapshot can't drift out of sync the way an incremental patch
+// sequence could.
+message ProxyConfig {
+  repeated ProxyRoute routes = 1;
+}
+
+message ProxyState {
+  // SHA-256 of the routes this agent last successfully applied (see
+  // crates/protocol/src/proxy_hash.rs) — compared against the control
+  // plane's own hash of current desired state to decide whether to send a
+  // fresh ProxyConfig. Empty if nothing has been applied yet.
+  bytes applied_hash = 1;
+  // Populated when the last apply attempt failed validation or reload.
+  string error = 2;
 }

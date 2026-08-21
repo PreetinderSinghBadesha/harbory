@@ -1,5 +1,6 @@
 mod backoff;
 mod container;
+mod proxy;
 mod stream;
 
 use std::path::PathBuf;
@@ -9,6 +10,7 @@ use harbory_protocol::v1::{pairing_service_client::PairingServiceClient, Registe
 
 use backoff::Backoff;
 use container::ContainerManager;
+use proxy::ProxyManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -47,12 +49,22 @@ async fn main() -> anyhow::Result<()> {
     // daemon is a startup error, not a background warning.
     let containers = ContainerManager::connect()?;
 
+    // Unlike Docker, nginx is not required at startup — a host might
+    // legitimately run only containers and never get a proxy route
+    // declared. ProxyManager only touches nginx when a ProxyConfig
+    // command actually arrives; if nginx turns out to be missing then,
+    // that surfaces as a reported apply error, not a crash here.
+    let nginx_binary = std::env::var("NGINX_BINARY_PATH").unwrap_or_else(|_| "nginx".into());
+    let nginx_config_path = std::env::var("NGINX_CONFIG_PATH")
+        .unwrap_or_else(|_| "/etc/nginx/conf.d/harbory.conf".into());
+    let proxy = ProxyManager::new(nginx_binary, nginx_config_path);
+
     // Transient disconnects (network blips, control-plane restarts) don't
     // require re-pairing — this loop just keeps reusing the stored
     // credential and identity, per the security model.
     let mut backoff = Backoff::default();
     loop {
-        match stream::run_stream(&control_plane_addr, &identity, &credential, &containers).await {
+        match stream::run_stream(&control_plane_addr, &identity, &credential, &containers, &proxy).await {
             Ok(()) => backoff.reset(),
             Err(err) => {
                 let delay = backoff.next_delay();

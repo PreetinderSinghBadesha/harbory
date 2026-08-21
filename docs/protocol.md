@@ -77,6 +77,7 @@ message AgentMessage {
     ChallengeResponse challenge_response = 2;
     Heartbeat heartbeat = 3;
     ContainerStateReport state_report = 4;  // Phase 3
+    ProxyState proxy_state = 5;              // Phase 4
   }
 }
 
@@ -86,6 +87,7 @@ message ControlPlaneMessage {
     Welcome welcome = 2;
     HeartbeatAck heartbeat_ack = 3;
     ContainerCommand command = 4;  // Phase 3
+    ProxyConfig proxy_config = 5;   // Phase 4
   }
 }
 ```
@@ -128,6 +130,42 @@ commands are dispatched only in response to a state report rather than
 pushed the instant desired state changes:
 [`reconciliation.md`](reconciliation.md).
 
+## Proxy commands and state (Phase 4)
+
+```proto
+message ProxyRoute {
+  string name = 1;
+  string server_name = 2;   // Host header to match; empty = catch-all
+  uint32 listen_port = 3;
+  string path_prefix = 4;   // default "/"
+  string upstream_host = 5;
+  uint32 upstream_port = 6;
+}
+
+message ProxyConfig {
+  repeated ProxyRoute routes = 1;  // full desired set, not a delta
+}
+
+message ProxyState {
+  bytes applied_hash = 1;  // see proxy_hash below; empty = nothing applied yet
+  string error = 2;
+}
+```
+
+One route = one Nginx `server{}` block; there's no merging of routes that
+share a `server_name`+`listen_port` into a single block with multiple
+`location`s. `ProxyConfig` is always the complete desired route set, same
+"full snapshot, not a delta" rationale as `ContainerStateReport`. Full
+design — including the validate/reload/rollback sequence and why
+reconciliation is triggered by `ProxyState` reports rather than pushed
+instantly: [`proxy-management.md`](proxy-management.md).
+
+**`applied_hash` must be computed identically by both sides**, or
+convergence detection breaks. The hash function
+(`hash_routes`) lives in `crates/protocol/src/proxy_hash.rs` — in this
+crate, not duplicated on each side — specifically so there's exactly one
+implementation both the control plane and the agent call.
+
 ### A gotcha worth remembering for future streaming RPCs
 
 The first implementation of this handler tried to send `Challenge` and read
@@ -142,4 +180,5 @@ handler's own return value. See `crates/control-plane/src/stream.rs`
 
 ## Not yet defined (later phases)
 
-- Proxy config command messages — Phase 4.
+Nothing yet — Phases 1-4's message types are all defined above. Later
+phases (dashboard real-time updates, etc.) may add more.

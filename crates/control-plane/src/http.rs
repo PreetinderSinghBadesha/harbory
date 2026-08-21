@@ -5,6 +5,7 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
+use harbory_protocol::v1::ProxyRoute;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -35,6 +36,8 @@ pub fn router(state: AppState) -> Router {
         .route("/agents", get(list_agents))
         .route("/agents/:agent_id/containers", get(list_containers))
         .route("/agents/:agent_id/containers/:name", put(put_container).delete(delete_container))
+        .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
+        .route("/agents/:agent_id/proxy-routes/:name", put(put_proxy_route).delete(delete_proxy_route))
         .with_state(state)
 }
 
@@ -190,5 +193,110 @@ async fn list_containers(
                 },
             })
             .collect(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct PutProxyRouteRequest {
+    #[serde(default)]
+    server_name: String,
+    listen_port: u16,
+    #[serde(default = "default_path_prefix")]
+    path_prefix: String,
+    upstream_host: String,
+    upstream_port: u16,
+}
+
+fn default_path_prefix() -> String {
+    "/".to_string()
+}
+
+/// Declares (or updates) one proxy route. Like containers, takes effect
+/// the next time the agent reports its proxy state, not instantly — see
+/// docs/proxy-management.md.
+async fn put_proxy_route(
+    State(state): State<AppState>,
+    Path((agent_id, name)): Path<(Uuid, String)>,
+    Json(req): Json<PutProxyRouteRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let route = ProxyRoute {
+        name,
+        server_name: req.server_name,
+        listen_port: req.listen_port as u32,
+        path_prefix: req.path_prefix,
+        upstream_host: req.upstream_host,
+        upstream_port: req.upstream_port as u32,
+    };
+
+    state.store.upsert_desired_proxy_route(agent_id, &route).await.map_err(|err| {
+        tracing::error!(?err, "failed to upsert desired proxy route");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removes a proxy route outright (there's no "absent" status for routes
+/// — see docs/proxy-management.md). 404 if nothing by that name existed.
+async fn delete_proxy_route(
+    State(state): State<AppState>,
+    Path((agent_id, name)): Path<(Uuid, String)>,
+) -> Result<StatusCode, StatusCode> {
+    let found = state.store.delete_desired_proxy_route(agent_id, &name).await.map_err(|err| {
+        tracing::error!(?err, "failed to delete desired proxy route");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+#[derive(Serialize)]
+struct ProxyRouteDto {
+    name: String,
+    server_name: String,
+    listen_port: u32,
+    path_prefix: String,
+    upstream_host: String,
+    upstream_port: u32,
+}
+
+#[derive(Serialize)]
+struct ProxyRoutesDto {
+    desired: Vec<ProxyRouteDto>,
+    applied_hash: Option<String>,
+    error: Option<String>,
+}
+
+async fn list_proxy_routes(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<ProxyRoutesDto>, StatusCode> {
+    let desired = state.store.get_desired_proxy_routes(agent_id).await.map_err(|err| {
+        tracing::error!(?err, "failed to load desired proxy routes");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let applied = state.store.get_proxy_state(agent_id).await.map_err(|err| {
+        tracing::error!(?err, "failed to load proxy state");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(ProxyRoutesDto {
+        desired: desired
+            .into_iter()
+            .map(|r| ProxyRouteDto {
+                name: r.name,
+                server_name: r.server_name,
+                listen_port: r.listen_port,
+                path_prefix: r.path_prefix,
+                upstream_host: r.upstream_host,
+                upstream_port: r.upstream_port,
+            })
+            .collect(),
+        applied_hash: applied.as_ref().map(|(hash, _)| hex::encode(hash)),
+        error: applied.and_then(|(_, error)| error),
     }))
 }

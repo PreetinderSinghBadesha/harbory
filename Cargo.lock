@@ -720,6 +720,7 @@ dependencies = [
  "harbory-common",
  "harbory-protocol",
  "rand",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -748,6 +749,7 @@ dependencies = [
  "chrono",
  "harbory-common",
  "harbory-protocol",
+ "hex",
  "prost",
  "rand",
  "serde",
@@ -769,6 +771,7 @@ version = "0.1.0"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
+ "sha2",
  "tonic",
  "tonic-build",
 ]

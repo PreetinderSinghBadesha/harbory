@@ -13,6 +13,7 @@ anyhow = { workspace = true }
 rand = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
 # Docker API client for Phase 3 container commands. Chosen over shelling
 # out to the `docker` CLI: typed responses, no parsing subprocess output.
 bollard = "0.17"
