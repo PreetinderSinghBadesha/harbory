@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::metrics::ConnectedAgentGuard;
 use crate::reconcile::{self, Action, ObservedContainer, ObservedStatus};
 use crate::store::Store;
 
@@ -95,10 +96,15 @@ async fn reconcile_and_dispatch(
     };
 
     for action in reconcile::diff(&desired, &observed) {
+        let action_label = match &action {
+            Action::Deploy(_) => "deploy",
+            Action::Remove(_) => "remove",
+        };
         let command = action_to_command(action);
         if tx.send(frame(ControlPlanePayload::Command(command))).await.is_err() {
             return false;
         }
+        metrics::counter!("harbory_container_commands_dispatched_total", "action" => action_label).increment(1);
     }
     true
 }
@@ -132,7 +138,11 @@ async fn reconcile_proxy_and_dispatch(
         return true; // already converged
     }
 
-    tx.send(frame(ControlPlanePayload::ProxyConfig(ProxyConfig { routes: desired }))).await.is_ok()
+    let sent = tx.send(frame(ControlPlanePayload::ProxyConfig(ProxyConfig { routes: desired }))).await.is_ok();
+    if sent {
+        metrics::counter!("harbory_proxy_configs_dispatched_total").increment(1);
+    }
+    sent
 }
 
 /// Everything that happens on one connection, after the response stream
@@ -172,6 +182,7 @@ async fn drive_connection(
         Ok(agent) => agent,
         Err(err) => {
             tracing::warn!(?err, "stream connect rejected: invalid credential");
+            metrics::counter!("harbory_agent_connections_total", "outcome" => "invalid_credential").increment(1);
             fail!(Status::unauthenticated("invalid credential"));
         }
     };
@@ -208,6 +219,7 @@ async fn drive_connection(
 
     if !verify(&public_key, &nonce, &signature) {
         tracing::warn!(agent_id = %agent.id, "stream connect rejected: challenge signature invalid");
+        metrics::counter!("harbory_agent_connections_total", "outcome" => "invalid_challenge_signature").increment(1);
         fail!(Status::unauthenticated("challenge response signature invalid"));
     }
 
@@ -224,6 +236,11 @@ async fn drive_connection(
     }
 
     tracing::info!(agent_id = %agent.id, "agent stream authenticated");
+    metrics::counter!("harbory_agent_connections_total", "outcome" => "success").increment(1);
+    // Decrements the gauge on every exit from this function — RAII so the
+    // several `break`s in the loop below don't each need their own
+    // decrement call.
+    let _connected_guard = ConnectedAgentGuard::new();
 
     // Step 4: heartbeats and container state reports, for as long as the
     // connection stays open. Commands are dispatched only in response to
@@ -235,6 +252,7 @@ async fn drive_connection(
     loop {
         match inbound.next().await {
             Some(Ok(AgentMessage { payload: Some(AgentPayload::Heartbeat(HeartbeatMsg { .. })) })) => {
+                metrics::counter!("harbory_heartbeats_received_total").increment(1);
                 if let Err(err) = store.record_heartbeat(agent_id).await {
                     tracing::warn!(%agent_id, ?err, "failed to record heartbeat");
                 }

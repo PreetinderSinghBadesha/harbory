@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::Store;
+use super::{audit::AuditEventType, Store};
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct AgentRecord {
@@ -72,15 +72,25 @@ impl Store {
     /// (Phase 1) already rejects any agent whose status isn't `'active'`,
     /// so that enforcement point doesn't change; this is what actually
     /// lets an operator trigger it. Returns `false` if nothing by that id
-    /// existed.
+    /// existed. Audit-logged (Phase 6) so revocations show up in the
+    /// account's activity feed alongside pairing/credential misuse events.
     pub async fn revoke_agent(&self, agent_id: Uuid) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query(
+        let account_id = sqlx::query_scalar::<_, Uuid>(
             "UPDATE agents SET status = 'revoked', revoked_at = now()
-             WHERE id = $1 AND status = 'active'",
+             WHERE id = $1 AND status = 'active'
+             RETURNING account_id",
         )
         .bind(agent_id)
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(result.rows_affected() > 0)
+
+        let Some(account_id) = account_id else {
+            return Ok(false);
+        };
+
+        let _ = self
+            .record_audit_event(AuditEventType::AgentRevoked, Some(account_id), Some(agent_id), serde_json::json!({}))
+            .await;
+        Ok(true)
     }
 }

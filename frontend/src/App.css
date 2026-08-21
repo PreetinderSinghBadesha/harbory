@@ -92,6 +92,35 @@ td {
   border-radius: 4px;
 }
 
+.activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.activity-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #3333;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.activity-item-warn {
+  border-color: #d33a;
+  background: #d3311a;
+}
+
+.activity-time {
+  color: #767676;
+  font-size: 0.8rem;
+}
+
 .error {
   color: #d33;
 }

@@ -6,6 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, Duration, Utc};
 use harbory_protocol::v1::ProxyRoute;
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
@@ -23,6 +24,7 @@ pub struct AppState {
     pub store: Store,
     pub online_threshold_seconds: i64,
     pub jwt_secret: String,
+    pub metrics_handle: PrometheusHandle,
 }
 
 /// Confirms `agent_id` exists *and* belongs to `account` in one check —
@@ -47,9 +49,16 @@ async fn require_owned_agent(state: &AppState, account: &AuthenticatedAccount, a
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        // Deliberately unauthenticated: metrics are process-global
+        // aggregates (no per-account/per-agent data), and scrape
+        // endpoints are conventionally protected at the network layer
+        // (firewall/internal-only routing), not per-request auth — see
+        // docs/observability.md.
+        .route("/metrics", get(metrics_endpoint))
         .route("/me", get(me))
         .route("/pairing-tokens", post(create_pairing_token))
         .route("/agents", get(list_agents))
+        .route("/security-events", get(list_security_events))
         .route("/agents/:agent_id/revoke", post(revoke_agent))
         .route("/agents/:agent_id/containers", get(list_containers))
         .route("/agents/:agent_id/containers/:name", put(put_container).delete(delete_container))
@@ -61,6 +70,10 @@ pub fn router(state: AppState) -> Router {
         // doesn't already have.
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+async fn metrics_endpoint(State(state): State<AppState>) -> String {
+    state.metrics_handle.render()
 }
 
 #[derive(Serialize)]
@@ -106,6 +119,45 @@ async fn create_pairing_token(
     })?;
 
     Ok(Json(PairingTokenDto { token: issued.plaintext, expires_at: issued.expires_at }))
+}
+
+#[derive(Serialize)]
+struct SecurityEventDto {
+    event_type: String,
+    agent_id: Option<Uuid>,
+    detail: serde_json::Value,
+    created_at: DateTime<Utc>,
+    is_misuse_signal: bool,
+}
+
+const SECURITY_EVENTS_LIMIT: i64 = 100;
+
+/// The dashboard's activity feed — in-dashboard alerting for misuse
+/// signals (pairing token reuse, credential fingerprint mismatch) rather
+/// than email, since no external email service is wired up yet. See
+/// docs/observability.md.
+async fn list_security_events(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+) -> Result<Json<Vec<SecurityEventDto>>, StatusCode> {
+    let events =
+        state.store.list_audit_events_for_account(account.id, SECURITY_EVENTS_LIMIT).await.map_err(|err| {
+            tracing::error!(?err, "failed to list security events");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(
+        events
+            .into_iter()
+            .map(|e| SecurityEventDto {
+                event_type: e.event_type,
+                agent_id: e.agent_id,
+                detail: e.detail,
+                created_at: e.created_at,
+                is_misuse_signal: e.is_misuse_signal,
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Serialize)]

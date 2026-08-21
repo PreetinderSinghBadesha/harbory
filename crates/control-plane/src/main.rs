@@ -44,6 +44,7 @@ async fn main() -> anyhow::Result<()> {
 
     let store = Store::connect(&database_url).await?;
     let signer = Keypair::load_or_generate(&PathBuf::from(signing_key_path))?;
+    let metrics_handle = harbory_control_plane::metrics::install();
 
     let grpc_store = store.clone();
     let grpc_signer = signer.clone();
@@ -69,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
 
     let online_threshold_seconds =
         (heartbeat_interval_seconds * missed_heartbeat_threshold) as i64;
-    let http_state = AppState { store, online_threshold_seconds, jwt_secret };
+    let http_state = AppState { store, online_threshold_seconds, jwt_secret, metrics_handle };
     let http_addr_parsed: std::net::SocketAddr = http_addr.parse()?;
     let http_server = async move {
         tracing::info!(addr = %http_addr, "starting harbory control plane (HTTP)");

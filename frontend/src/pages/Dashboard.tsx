@@ -16,6 +16,22 @@ interface PairingToken {
   expires_at: string;
 }
 
+interface SecurityEvent {
+  event_type: string;
+  agent_id: string | null;
+  detail: Record<string, unknown>;
+  created_at: string;
+  is_misuse_signal: boolean;
+}
+
+const EVENT_LABELS: Record<string, string> = {
+  pairing_success: "Agent paired",
+  pairing_token_reuse: "Pairing token reuse detected",
+  pairing_token_expired: "Expired pairing token used",
+  credential_fingerprint_mismatch: "Credential fingerprint mismatch",
+  agent_revoked: "Agent revoked",
+};
+
 export function Dashboard() {
   const queryClient = useQueryClient();
 
@@ -34,6 +50,12 @@ export function Dashboard() {
   const revoke = useMutation({
     mutationFn: (agentId: string) => apiFetch<void>(`/agents/${agentId}/revoke`, { method: "POST" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agents"] }),
+  });
+
+  const { data: securityEvents } = useQuery({
+    queryKey: ["security-events"],
+    queryFn: () => apiFetch<SecurityEvent[]>("/security-events"),
+    refetchInterval: 10000,
   });
 
   return (
@@ -99,6 +121,21 @@ export function Dashboard() {
               ))}
             </tbody>
           </table>
+        )}
+      </section>
+
+      <section>
+        <h2>Activity</h2>
+        {securityEvents && securityEvents.length === 0 && <p className="page-status">No activity yet.</p>}
+        {securityEvents && securityEvents.length > 0 && (
+          <ul className="activity-list">
+            {securityEvents.map((e, i) => (
+              <li key={i} className={e.is_misuse_signal ? "activity-item activity-item-warn" : "activity-item"}>
+                <span>{EVENT_LABELS[e.event_type] ?? e.event_type}</span>
+                <span className="activity-time">{new Date(e.created_at).toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
     </div>

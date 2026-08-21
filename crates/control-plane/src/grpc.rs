@@ -29,6 +29,13 @@ impl PairingService for PairingServiceImpl {
             .await
             .map_err(|err| {
                 tracing::warn!(?err, "pairing registration rejected");
+                let outcome_label = match err {
+                    RegisterError::InvalidToken => "invalid_token",
+                    RegisterError::TokenAlreadyUsed => "token_already_used",
+                    RegisterError::TokenExpired => "token_expired",
+                    RegisterError::Db(_) => "db_error",
+                };
+                metrics::counter!("harbory_pairing_attempts_total", "outcome" => outcome_label).increment(1);
                 match err {
                     RegisterError::InvalidToken
                     | RegisterError::TokenAlreadyUsed
@@ -41,6 +48,8 @@ impl PairingService for PairingServiceImpl {
                     RegisterError::Db(_) => Status::internal("internal error"),
                 }
             })?;
+
+        metrics::counter!("harbory_pairing_attempts_total", "outcome" => "success").increment(1);
 
         Ok(Response::new(RegisterResponse {
             agent_id: outcome.agent_id.to_string(),

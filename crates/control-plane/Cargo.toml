@@ -24,6 +24,11 @@ hex = "0.4"
 # Verifies Supabase-issued (HS256) JWTs on incoming HTTP requests — the
 # standard, widely-used Rust JWT crate.
 jsonwebtoken = "9"
+# Process-global counters/gauges for agent/control-plane health, exposed
+# at GET /metrics in Prometheus text format — the standard combo for
+# instrumenting Rust services.
+metrics = "0.23"
+metrics-exporter-prometheus = { version = "0.15", default-features = false }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

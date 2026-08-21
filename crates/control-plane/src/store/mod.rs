@@ -7,7 +7,7 @@ mod proxy;
 mod registration;
 
 pub use agents::AgentRecord;
-pub use audit::AuditEventType;
+pub use audit::{AuditEventRecord, AuditEventType};
 pub use pairing::IssuedPairingToken;
 pub use registration::{RegisterError, RegisterOutcome, VerifyCredentialError};
 

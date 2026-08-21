@@ -17,6 +17,7 @@ use harbory_control_plane::{
     store::Store,
 };
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -34,7 +35,14 @@ fn unique_email() -> String {
 }
 
 fn test_app(store: Store) -> axum::Router {
-    router(AppState { store, online_threshold_seconds: 30, jwt_secret: TEST_JWT_SECRET.to_string() })
+    // A fresh, non-globally-installed recorder per call — this test
+    // binary runs many #[tokio::test]s in one process, and
+    // metrics::set_global_recorder can only succeed once per process.
+    // build_recorder() (vs. install_recorder()) skips that, which is
+    // fine here: these tests only check the endpoint responds, not that
+    // specific counters were recorded.
+    let metrics_handle = PrometheusBuilder::new().build_recorder().handle();
+    router(AppState { store, online_threshold_seconds: 30, jwt_secret: TEST_JWT_SECRET.to_string(), metrics_handle })
 }
 
 fn make_token(sub: Uuid, email: &str) -> String {
@@ -206,4 +214,79 @@ async fn revoke_flips_status_and_is_reflected_in_the_agent_list() {
         .unwrap();
     let body = body_json(list_response).await;
     assert_eq!(body[0]["status"], "revoked");
+}
+
+#[tokio::test]
+async fn metrics_endpoint_requires_no_auth() {
+    let app = test_app(test_store().await);
+    let response = app.oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap()).await.unwrap();
+    // Process-global aggregates only, no per-account data — see
+    // docs/observability.md for why this is deliberately unauthenticated.
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn revoke_appears_in_the_account_security_feed() {
+    let store = test_store().await;
+    let signer = Keypair::generate();
+    let owner = Uuid::new_v4();
+    let agent_id = register_agent_for_account(&store, &signer, owner).await;
+    let owner_token = make_token(owner, &unique_email());
+
+    let app = test_app(store);
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/agents/{agent_id}/revoke"))
+                .header("Authorization", format!("Bearer {owner_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/security-events")
+                .header("Authorization", format!("Bearer {owner_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let events = body.as_array().unwrap();
+    assert!(events.iter().any(|e| e["event_type"] == "agent_revoked" && e["agent_id"] == agent_id.to_string()));
+}
+
+#[tokio::test]
+async fn pairing_token_reuse_is_flagged_as_a_misuse_signal_in_the_security_feed() {
+    let store = test_store().await;
+    let signer = Keypair::generate();
+    let owner = Uuid::new_v4();
+    store.get_or_create_account_by_id(owner, &unique_email()).await.unwrap();
+    let token = store.issue_pairing_token(owner, ChronoDuration::minutes(10)).await.unwrap();
+
+    // First use succeeds, second (the reuse) is what we're after.
+    store.register_agent(&signer, &token.plaintext, Keypair::generate().public_key_bytes()).await.unwrap();
+    let _ = store.register_agent(&signer, &token.plaintext, Keypair::generate().public_key_bytes()).await;
+
+    let owner_token = make_token(owner, &unique_email());
+    let response = test_app(store)
+        .oneshot(
+            Request::builder()
+                .uri("/security-events")
+                .header("Authorization", format!("Bearer {owner_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_json(response).await;
+    let events = body.as_array().unwrap();
+    let reuse_event = events.iter().find(|e| e["event_type"] == "pairing_token_reuse").unwrap();
+    assert_eq!(reuse_event["is_misuse_signal"], true);
 }
