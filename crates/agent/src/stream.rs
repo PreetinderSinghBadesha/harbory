@@ -101,9 +101,20 @@ pub async fn run_stream(
                 match msg {
                     Some(Ok(control_plane_msg)) => {
                         if let Some(ControlPlanePayload::Command(cmd)) = control_plane_msg.payload {
-                            execute_command(containers, cmd).await;
-                            if let Err(err) = send_state_report(&tx, containers).await {
-                                tracing::warn!(%err, "failed to send post-command container state report");
+                            // Report immediately only on success, for fast
+                            // convergence visibility. On failure, don't —
+                            // the control plane will just re-send the same
+                            // command on the very next report, and with no
+                            // delay between "report" and "retry" that's an
+                            // unbounded-rate retry loop against Docker for
+                            // a persistently broken spec (found this the
+                            // hard way against a real daemon). Skipping the
+                            // immediate report here means a failure is only
+                            // retried at the periodic cadence instead.
+                            if execute_command(containers, cmd).await {
+                                if let Err(err) = send_state_report(&tx, containers).await {
+                                    tracing::warn!(%err, "failed to send post-command container state report");
+                                }
                             }
                         }
                         // HeartbeatAck and anything else: nothing to do.
@@ -116,24 +127,38 @@ pub async fn run_stream(
     }
 }
 
-async fn execute_command(containers: &ContainerManager, cmd: harbory_protocol::v1::ContainerCommand) {
+/// Returns whether the command succeeded — see the caller for why that
+/// controls whether a state report is sent immediately afterward.
+async fn execute_command(containers: &ContainerManager, cmd: harbory_protocol::v1::ContainerCommand) -> bool {
     match cmd.action {
         Some(ContainerAction::Deploy(spec)) => {
             tracing::info!(name = %spec.name, image = %spec.image, "deploying container");
-            if let Err(err) = containers.deploy(&spec).await {
-                tracing::warn!(name = %spec.name, %err, "failed to deploy container");
+            match containers.deploy(&spec).await {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!(name = %spec.name, %err, "failed to deploy container");
+                    false
+                }
             }
         }
         Some(ContainerAction::Stop(name)) => {
             tracing::info!(%name, "stopping container");
-            if let Err(err) = containers.stop(&name).await {
-                tracing::warn!(%name, %err, "failed to stop container");
+            match containers.stop(&name).await {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!(%name, %err, "failed to stop container");
+                    false
+                }
             }
         }
         Some(ContainerAction::Remove(name)) => {
             tracing::info!(%name, "removing container");
             containers.remove(&name).await;
+            true
         }
-        None => tracing::debug!("received ContainerCommand with no action set"),
+        None => {
+            tracing::debug!("received ContainerCommand with no action set");
+            false
+        }
     }
 }

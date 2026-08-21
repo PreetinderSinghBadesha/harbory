@@ -76,6 +76,7 @@ message AgentMessage {
     Hello hello = 1;
     ChallengeResponse challenge_response = 2;
     Heartbeat heartbeat = 3;
+    ContainerStateReport state_report = 4;  // Phase 3
   }
 }
 
@@ -84,6 +85,7 @@ message ControlPlaneMessage {
     Challenge challenge = 1;
     Welcome welcome = 2;
     HeartbeatAck heartbeat_ack = 3;
+    ContainerCommand command = 4;  // Phase 3
   }
 }
 ```
@@ -92,6 +94,39 @@ message ControlPlaneMessage {
 `Welcome` carries the heartbeat interval and missed-heartbeat threshold the
 control plane wants this agent to use — not hardcoded agent-side, so it can
 change without an agent redeploy.
+
+## Container commands and state (Phase 3)
+
+```proto
+message ContainerSpec {
+  string name = 1;
+  string image = 2;
+  repeated string env = 3;
+  repeated PortMapping ports = 4;
+  repeated string command = 5;  // empty = image's own ENTRYPOINT/CMD
+}
+
+message ContainerCommand {
+  oneof action {
+    ContainerSpec deploy = 1;  // create-or-replace, idempotent
+    string stop = 2;           // container name — see note below
+    string remove = 3;         // container name
+  }
+}
+
+message ContainerStateReport {
+  repeated ContainerState containers = 1;  // full snapshot, not a delta
+}
+```
+
+`ContainerCommand.stop` exists in the wire format for a possible future
+manual/dashboard-triggered stop, but the automatic reconciler
+(`crates/control-plane/src/reconcile.rs`) never emits it — v1 desired
+state is only "running" or "absent," there's no "stopped but present"
+state to converge toward. Full reconciliation design, including why
+commands are dispatched only in response to a state report rather than
+pushed the instant desired state changes:
+[`reconciliation.md`](reconciliation.md).
 
 ### A gotcha worth remembering for future streaming RPCs
 
@@ -107,6 +142,4 @@ handler's own return value. See `crates/control-plane/src/stream.rs`
 
 ## Not yet defined (later phases)
 
-- Command dispatch and state reporting, as new `AgentMessage`/`ControlPlaneMessage` variants — Phase 3.
-- Container command messages — Phase 3.
 - Proxy config command messages — Phase 4.

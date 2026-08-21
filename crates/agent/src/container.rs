@@ -4,9 +4,12 @@ use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions, StartContainerOptions,
     StopContainerOptions,
 };
+use bollard::image::CreateImageOptions;
 use bollard::models::{HostConfig, PortBinding};
 use bollard::Docker;
 use harbory_protocol::v1::{ContainerSpec, ContainerState, ContainerStatus};
+use tokio::sync::Mutex;
+use tokio_stream::StreamExt;
 
 /// Only containers carrying this label are ever listed, reported, or
 /// touched by `remove`/`deploy`'s cleanup step — critical on a host that
@@ -17,6 +20,13 @@ const NAME_LABEL: &str = "harbory.name";
 
 pub struct ContainerManager {
     docker: Docker,
+    /// Deploy failures for containers that therefore don't exist in Docker
+    /// at all (e.g. bad image reference) — `list_state` has nothing to
+    /// report for those from `list_containers` alone, so this is what
+    /// surfaces them as `ContainerStatus::Error` instead of them silently
+    /// looking "absent". Cleared on the next successful deploy or on
+    /// remove.
+    errors: Mutex<HashMap<String, String>>,
 }
 
 fn docker_name(logical_name: &str) -> String {
@@ -25,7 +35,7 @@ fn docker_name(logical_name: &str) -> String {
 
 impl ContainerManager {
     pub fn connect() -> Result<Self, bollard::errors::Error> {
-        Ok(Self { docker: Docker::connect_with_local_defaults()? })
+        Ok(Self { docker: Docker::connect_with_local_defaults()?, errors: Mutex::new(HashMap::new()) })
     }
 
     /// Create-or-replace, idempotent: removes any existing container by
@@ -34,8 +44,41 @@ impl ContainerManager {
     /// it's what makes `reconcile::Action::Deploy` correct for "wrong
     /// image running" and "crashed" cases, not just "doesn't exist yet".
     pub async fn deploy(&self, spec: &ContainerSpec) -> Result<(), bollard::errors::Error> {
+        match self.try_deploy(spec).await {
+            Ok(()) => {
+                self.errors.lock().await.remove(&spec.name);
+                Ok(())
+            }
+            Err(err) => {
+                self.errors.lock().await.insert(spec.name.clone(), err.to_string());
+                Err(err)
+            }
+        }
+    }
+
+    async fn try_deploy(&self, spec: &ContainerSpec) -> Result<(), bollard::errors::Error> {
         let name = docker_name(&spec.name);
         self.force_remove(&name).await;
+
+        // Unlike `docker run`, bollard's create_container doesn't pull a
+        // missing image on its own — found the hard way against a real
+        // daemon (create_container 404'd with "No such image"). Pull
+        // errors are deliberately swallowed rather than propagated: the
+        // image might already exist locally under this exact tag (offline
+        // dev, a custom-built image never pushed anywhere), in which case
+        // create_container below still succeeds; if it doesn't exist
+        // either way, create_container's own error is the one that matters.
+        let mut pull = self.docker.create_image(
+            Some(CreateImageOptions { from_image: spec.image.as_str(), ..Default::default() }),
+            None,
+            None,
+        );
+        while let Some(result) = pull.next().await {
+            if let Err(err) = result {
+                tracing::debug!(image = %spec.image, %err, "image pull failed, will still try create_container");
+                break;
+            }
+        }
 
         let mut labels = HashMap::new();
         labels.insert(MANAGED_LABEL.to_string(), "true".to_string());
@@ -69,6 +112,7 @@ impl ContainerManager {
 
     pub async fn remove(&self, logical_name: &str) {
         self.force_remove(&docker_name(logical_name)).await;
+        self.errors.lock().await.remove(logical_name);
     }
 
     /// The reconciler never emits this today (v1 desired state is only
@@ -90,7 +134,10 @@ impl ContainerManager {
 
     /// Every Harbory-managed container on this host, regardless of the
     /// `harbory.name` desired state on file — this is the observed side
-    /// of reconciliation, not filtered by what's currently desired.
+    /// of reconciliation, not filtered by what's currently desired. Also
+    /// synthesizes entries for names that failed to deploy at all (see
+    /// `errors`), so a bad image reference shows up as an error rather
+    /// than looking like nothing was ever attempted.
     pub async fn list_state(&self) -> Result<Vec<ContainerState>, bollard::errors::Error> {
         let mut filters = HashMap::new();
         filters.insert("label".to_string(), vec![format!("{MANAGED_LABEL}=true")]);
@@ -100,7 +147,7 @@ impl ContainerManager {
             .list_containers(Some(ListContainersOptions { all: true, filters, ..Default::default() }))
             .await?;
 
-        Ok(containers
+        let mut states: Vec<ContainerState> = containers
             .into_iter()
             .map(|c| {
                 let name = c.labels.as_ref().and_then(|l| l.get(NAME_LABEL)).cloned().unwrap_or_default();
@@ -112,6 +159,20 @@ impl ContainerManager {
                 };
                 ContainerState { name, image, status: status as i32, error: String::new() }
             })
-            .collect())
+            .collect();
+
+        let errors = self.errors.lock().await;
+        for (name, error) in errors.iter() {
+            if !states.iter().any(|s| &s.name == name) {
+                states.push(ContainerState {
+                    name: name.clone(),
+                    image: String::new(),
+                    status: ContainerStatus::Error as i32,
+                    error: error.clone(),
+                });
+            }
+        }
+
+        Ok(states)
     }
 }
