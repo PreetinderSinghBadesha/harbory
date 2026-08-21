@@ -1,0 +1,101 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+.page-status,
+.hint {
+  color: #767676;
+  font-size: 0.9rem;
+}
+
+section {
+  margin-bottom: 2rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid #3333;
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.inline-form input {
+  flex: 1 1 8rem;
+}
+
+.auth-page {
+  max-width: 320px;
+  margin: 4rem auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.auth-page form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: #4a8cff;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.pairing-token {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid #3333;
+  border-radius: 6px;
+}
+
+.pairing-token code,
+.pairing-token pre {
+  display: block;
+  overflow-x: auto;
+  padding: 0.4rem;
+  background: #8881;
+  border-radius: 4px;
+}
+
+.error {
+  color: #d33;
+}
+
+.info {
+  color: #2a2;
+}

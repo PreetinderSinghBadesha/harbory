@@ -1,3 +1,4 @@
+mod accounts;
 mod agents;
 mod audit;
 mod containers;
@@ -25,18 +26,5 @@ impl Store {
         let pool = PgPool::connect(database_url).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self { pool })
-    }
-
-    /// Minimal account creation. Full account/auth management is Phase 5;
-    /// this exists so Phase 1 has something to hang pairing tokens and
-    /// agents off of.
-    pub async fn create_account(&self, email: &str) -> Result<uuid::Uuid, sqlx::Error> {
-        let rec = sqlx::query_scalar::<_, uuid::Uuid>(
-            "INSERT INTO accounts (email) VALUES ($1) RETURNING id",
-        )
-        .bind(email)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(rec)
     }
 }

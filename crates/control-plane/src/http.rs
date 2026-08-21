@@ -1,25 +1,111 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{get, put},
+    routing::{get, post, put},
     Json, Router,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use harbory_protocol::v1::ProxyRoute;
 use serde::{Deserialize, Serialize};
+use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
+use crate::auth::AuthenticatedAccount;
 use crate::reconcile::{DesiredContainer, DesiredStatus, ObservedContainer, ObservedStatus, PortMapping};
 use crate::store::Store;
 
-/// Minimal JSON status/control endpoint — a stand-in for the real
-/// dashboard (Phase 5) and its not-yet-chosen frontend stack. Read/write,
-/// unauthenticated (fine for now: nothing sensitive beyond what §3's
-/// revocation UI will need proper auth for anyway).
+/// JSON API behind the dashboard — every route requires a valid Supabase
+/// JWT (`AuthenticatedAccount`, see auth.rs) and, for anything scoped to a
+/// specific agent, ownership of that agent. Not yet a full REST API for
+/// third-party use; this is what `frontend/` talks to.
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
     pub online_threshold_seconds: i64,
+    pub jwt_secret: String,
+}
+
+/// Confirms `agent_id` exists *and* belongs to `account` in one check —
+/// 404 (not 403) either way, so a caller probing agent ids they don't own
+/// can't distinguish "doesn't exist" from "exists but isn't yours".
+async fn require_owned_agent(state: &AppState, account: &AuthenticatedAccount, agent_id: Uuid) -> Result<(), StatusCode> {
+    let agent = state
+        .store
+        .get_agent(agent_id)
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "failed to look up agent for ownership check");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if agent.account_id != account.id {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(())
+}
+
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/me", get(me))
+        .route("/pairing-tokens", post(create_pairing_token))
+        .route("/agents", get(list_agents))
+        .route("/agents/:agent_id/revoke", post(revoke_agent))
+        .route("/agents/:agent_id/containers", get(list_containers))
+        .route("/agents/:agent_id/containers/:name", put(put_container).delete(delete_container))
+        .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
+        .route("/agents/:agent_id/proxy-routes/:name", put(put_proxy_route).delete(delete_proxy_route))
+        // Bearer-token auth (not cookies), so a permissive CORS policy
+        // doesn't carry the usual credentialed-CORS/CSRF risk — a
+        // cross-origin page can't make the browser attach a token it
+        // doesn't already have.
+        .layer(CorsLayer::permissive())
+        .with_state(state)
+}
+
+#[derive(Serialize)]
+struct MeDto {
+    id: Uuid,
+    email: Option<String>,
+}
+
+async fn me(account: AuthenticatedAccount) -> Json<MeDto> {
+    Json(MeDto { id: account.id, email: account.email })
+}
+
+#[derive(Deserialize)]
+struct CreatePairingTokenRequest {
+    #[serde(default = "default_pairing_token_ttl_minutes")]
+    ttl_minutes: i64,
+}
+
+fn default_pairing_token_ttl_minutes() -> i64 {
+    10
+}
+
+#[derive(Serialize)]
+struct PairingTokenDto {
+    token: String,
+    expires_at: DateTime<Utc>,
+}
+
+/// Issues a fresh pairing token for the authenticated account — the
+/// backend for the "agent pairing UI" (generate/display a token + install
+/// command). Replaces the dev-only `examples/issue_token.rs` CLI for
+/// anything account-scoped; that example still exists for quick local
+/// testing without a Supabase login.
+async fn create_pairing_token(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Json(req): Json<CreatePairingTokenRequest>,
+) -> Result<Json<PairingTokenDto>, StatusCode> {
+    let ttl = Duration::minutes(req.ttl_minutes.clamp(1, 60));
+    let issued = state.store.issue_pairing_token(account.id, ttl).await.map_err(|err| {
+        tracing::error!(?err, "failed to issue pairing token");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(PairingTokenDto { token: issued.plaintext, expires_at: issued.expires_at }))
 }
 
 #[derive(Serialize)]
@@ -31,21 +117,15 @@ struct AgentSummaryDto {
     last_heartbeat_at: Option<DateTime<Utc>>,
 }
 
-pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/agents", get(list_agents))
-        .route("/agents/:agent_id/containers", get(list_containers))
-        .route("/agents/:agent_id/containers/:name", put(put_container).delete(delete_container))
-        .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
-        .route("/agents/:agent_id/proxy-routes/:name", put(put_proxy_route).delete(delete_proxy_route))
-        .with_state(state)
-}
-
-async fn list_agents(State(state): State<AppState>) -> Result<Json<Vec<AgentSummaryDto>>, StatusCode> {
-    let agents = state.store.list_agents(state.online_threshold_seconds).await.map_err(|err| {
-        tracing::error!(?err, "failed to list agents");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+async fn list_agents(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+) -> Result<Json<Vec<AgentSummaryDto>>, StatusCode> {
+    let agents =
+        state.store.list_agents_for_account(account.id, state.online_threshold_seconds).await.map_err(|err| {
+            tracing::error!(?err, "failed to list agents");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(
         agents
@@ -59,6 +139,31 @@ async fn list_agents(State(state): State<AppState>) -> Result<Json<Vec<AgentSumm
             })
             .collect(),
     ))
+}
+
+/// Per §3: revoked agents can only rejoin via a brand-new pairing token —
+/// this is the operator action that starts that. 404 if the agent doesn't
+/// exist / isn't yours; a second revoke on an already-revoked agent is
+/// also a 404 (`Store::revoke_agent` only flips `active -> revoked`, and
+/// "already not active" isn't distinguished from "never existed" for the
+/// same don't-leak-existence reason as `require_owned_agent`).
+async fn revoke_agent(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Path(agent_id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let revoked = state.store.revoke_agent(agent_id).await.map_err(|err| {
+        tracing::error!(?err, "failed to revoke agent");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if revoked {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 
 #[derive(Deserialize)]
@@ -85,9 +190,12 @@ struct PutContainerRequest {
 /// trade-off for now rather than a bug.
 async fn put_container(
     State(state): State<AppState>,
+    account: AuthenticatedAccount,
     Path((agent_id, name)): Path<(Uuid, String)>,
     Json(req): Json<PutContainerRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
     let container = DesiredContainer {
         name,
         image: req.image,
@@ -109,8 +217,11 @@ async fn put_container(
 /// declared for this agent — there's no "running" declaration to retract.
 async fn delete_container(
     State(state): State<AppState>,
+    account: AuthenticatedAccount,
     Path((agent_id, name)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
     let found = state.store.set_desired_absent(agent_id, &name).await.map_err(|err| {
         tracing::error!(?err, "failed to mark desired container absent");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -154,8 +265,11 @@ struct ContainersDto {
 
 async fn list_containers(
     State(state): State<AppState>,
+    account: AuthenticatedAccount,
     Path(agent_id): Path<Uuid>,
 ) -> Result<Json<ContainersDto>, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
     let desired = state.store.get_desired_containers(agent_id).await.map_err(|err| {
         tracing::error!(?err, "failed to load desired containers");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -216,9 +330,12 @@ fn default_path_prefix() -> String {
 /// docs/proxy-management.md.
 async fn put_proxy_route(
     State(state): State<AppState>,
+    account: AuthenticatedAccount,
     Path((agent_id, name)): Path<(Uuid, String)>,
     Json(req): Json<PutProxyRouteRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
     let route = ProxyRoute {
         name,
         server_name: req.server_name,
@@ -240,8 +357,11 @@ async fn put_proxy_route(
 /// — see docs/proxy-management.md). 404 if nothing by that name existed.
 async fn delete_proxy_route(
     State(state): State<AppState>,
+    account: AuthenticatedAccount,
     Path((agent_id, name)): Path<(Uuid, String)>,
 ) -> Result<StatusCode, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
     let found = state.store.delete_desired_proxy_route(agent_id, &name).await.map_err(|err| {
         tracing::error!(?err, "failed to delete desired proxy route");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -273,8 +393,11 @@ struct ProxyRoutesDto {
 
 async fn list_proxy_routes(
     State(state): State<AppState>,
+    account: AuthenticatedAccount,
     Path(agent_id): Path<Uuid>,
 ) -> Result<Json<ProxyRoutesDto>, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
     let desired = state.store.get_desired_proxy_routes(agent_id).await.map_err(|err| {
         tracing::error!(?err, "failed to load desired proxy routes");
         StatusCode::INTERNAL_SERVER_ERROR

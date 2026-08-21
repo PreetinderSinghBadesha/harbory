@@ -44,20 +44,43 @@ impl Store {
     }
 
     /// `online` is true iff a heartbeat has been seen within
-    /// `online_threshold_seconds` of now.
-    pub async fn list_agents(
+    /// `online_threshold_seconds` of now. Scoped to one account — every
+    /// HTTP caller is authenticated now (Phase 5), so "list every agent on
+    /// the control plane regardless of owner" is no longer a thing any
+    /// endpoint should do.
+    pub async fn list_agents_for_account(
         &self,
+        account_id: Uuid,
         online_threshold_seconds: i64,
     ) -> Result<Vec<AgentSummary>, sqlx::Error> {
         sqlx::query_as::<_, AgentSummary>(
             "SELECT id, account_id, status, last_heartbeat_at,
                     (last_heartbeat_at IS NOT NULL
-                        AND now() - last_heartbeat_at < make_interval(secs => $1::double precision)) AS online
+                        AND now() - last_heartbeat_at < make_interval(secs => $2::double precision)) AS online
              FROM agents
+             WHERE account_id = $1
              ORDER BY created_at",
         )
+        .bind(account_id)
         .bind(online_threshold_seconds)
         .fetch_all(&self.pool)
         .await
+    }
+
+    /// Per §3: revoked agents can only rejoin via a brand-new pairing
+    /// token. This just flips the status flag — `verify_agent_credential`
+    /// (Phase 1) already rejects any agent whose status isn't `'active'`,
+    /// so that enforcement point doesn't change; this is what actually
+    /// lets an operator trigger it. Returns `false` if nothing by that id
+    /// existed.
+    pub async fn revoke_agent(&self, agent_id: Uuid) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE agents SET status = 'revoked', revoked_at = now()
+             WHERE id = $1 AND status = 'active'",
+        )
+        .bind(agent_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 }

@@ -53,7 +53,7 @@ async fn spawn_server(store: Store, signer: Keypair) -> SocketAddr {
     addr
 }
 
-async fn register_test_agent(store: &Store, signer: &Keypair) -> (Uuid, Keypair, Vec<u8>) {
+async fn register_test_agent(store: &Store, signer: &Keypair) -> (Uuid, Uuid, Keypair, Vec<u8>) {
     let account_id = store.create_account(&unique_email()).await.unwrap();
     let token = store.issue_pairing_token(account_id, ChronoDuration::minutes(10)).await.unwrap();
     let agent_identity = Keypair::generate();
@@ -61,14 +61,14 @@ async fn register_test_agent(store: &Store, signer: &Keypair) -> (Uuid, Keypair,
         .register_agent(signer, &token.plaintext, agent_identity.public_key_bytes())
         .await
         .unwrap();
-    (outcome.agent_id, agent_identity, outcome.credential)
+    (outcome.agent_id, account_id, agent_identity, outcome.credential)
 }
 
 #[tokio::test]
 async fn handshake_succeeds_and_heartbeat_marks_agent_online() {
     let store = test_store().await;
     let signer = Keypair::generate();
-    let (agent_id, agent_identity, credential) = register_test_agent(&store, &signer).await;
+    let (agent_id, account_id, agent_identity, credential) = register_test_agent(&store, &signer).await;
 
     let addr = spawn_server(store.clone(), signer).await;
     let mut client = AgentStreamServiceClient::connect(format!("http://{addr}")).await.unwrap();
@@ -105,7 +105,7 @@ async fn handshake_succeeds_and_heartbeat_marks_agent_online() {
     }
 
     // Not online yet: no heartbeat has been sent.
-    let before = store.list_agents(30).await.unwrap();
+    let before = store.list_agents_for_account(account_id, 30).await.unwrap();
     let summary = before.iter().find(|a| a.id == agent_id).unwrap();
     assert!(!summary.online, "agent should not be online before any heartbeat");
 
@@ -118,14 +118,14 @@ async fn handshake_succeeds_and_heartbeat_marks_agent_online() {
     let ack = inbound.next().await.unwrap().unwrap();
     assert!(matches!(ack.payload, Some(ControlPlanePayload::HeartbeatAck(_))));
 
-    let after = store.list_agents(30).await.unwrap();
+    let after = store.list_agents_for_account(account_id, 30).await.unwrap();
     let summary = after.iter().find(|a| a.id == agent_id).unwrap();
     assert!(summary.online, "agent should be online right after a heartbeat");
 
     // With a threshold shorter than time actually elapsed, the same
     // heartbeat should no longer count as "recent".
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let stale = store.list_agents(0).await.unwrap();
+    let stale = store.list_agents_for_account(account_id, 0).await.unwrap();
     let summary = stale.iter().find(|a| a.id == agent_id).unwrap();
     assert!(!summary.online, "agent should be offline once the heartbeat ages past the threshold");
 }
@@ -157,7 +157,7 @@ async fn garbage_credential_is_rejected_before_challenge() {
 async fn signing_challenge_with_wrong_key_is_rejected() {
     let store = test_store().await;
     let signer = Keypair::generate();
-    let (_agent_id, _real_identity, credential) = register_test_agent(&store, &signer).await;
+    let (_agent_id, _account_id, _real_identity, credential) = register_test_agent(&store, &signer).await;
 
     let addr = spawn_server(store, signer).await;
     let mut client = AgentStreamServiceClient::connect(format!("http://{addr}")).await.unwrap();
