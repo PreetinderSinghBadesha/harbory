@@ -41,11 +41,14 @@ service AgentStreamService {
 
 // Handshake, in order: Hello -> (server) Challenge -> ChallengeResponse ->
 // (server) Welcome -> Heartbeat*. See /docs/connection-lifecycle.md.
+// ContainerStateReport and ContainerCommand (Phase 3) flow over this same
+// stream once authenticated, rather than as separate RPCs.
 message AgentMessage {
   oneof payload {
     Hello hello = 1;
     ChallengeResponse challenge_response = 2;
     Heartbeat heartbeat = 3;
+    ContainerStateReport state_report = 4;
   }
 }
 
@@ -54,6 +57,7 @@ message ControlPlaneMessage {
     Challenge challenge = 1;
     Welcome welcome = 2;
     HeartbeatAck heartbeat_ack = 3;
+    ContainerCommand command = 4;
   }
 }
 
@@ -89,3 +93,59 @@ message Heartbeat {
 }
 
 message HeartbeatAck {}
+
+// --- Phase 3: container commands & state ---------------------------------
+//
+// v1 scope is deliberately narrow (see HARBORY_README.md §1): a desired
+// container is either running (with a given image/env/ports/command) or
+// absent. No restart policies, no scaling, no arbitrary scheduling — those
+// are explicitly out of scope. See /docs/reconciliation.md.
+
+message PortMapping {
+  uint32 host_port = 1;
+  uint32 container_port = 2;
+}
+
+message ContainerSpec {
+  // Logical name, unique per agent. The agent derives the actual Docker
+  // container name from this (prefixed, labeled) — see
+  // crates/agent/src/container.rs.
+  string name = 1;
+  string image = 2;
+  repeated string env = 3;      // "KEY=VALUE" entries
+  repeated PortMapping ports = 4;
+  // Empty = use the image's own ENTRYPOINT/CMD.
+  repeated string command = 5;
+}
+
+message ContainerCommand {
+  oneof action {
+    ContainerSpec deploy = 1;  // create-or-replace, idempotent
+    string stop = 2;           // container name
+    string remove = 3;         // container name
+  }
+}
+
+enum ContainerStatus {
+  CONTAINER_STATUS_UNSPECIFIED = 0;
+  CONTAINER_STATUS_RUNNING = 1;
+  CONTAINER_STATUS_STOPPED = 2;
+  CONTAINER_STATUS_REMOVED = 3;
+  CONTAINER_STATUS_ERROR = 4;
+}
+
+message ContainerState {
+  string name = 1;
+  string image = 2;
+  ContainerStatus status = 3;
+  // Populated when status == CONTAINER_STATUS_ERROR.
+  string error = 4;
+}
+
+// Full snapshot of every Harbory-managed container on the agent's host,
+// not a delta — simplest thing that can't drift, at the cost of a bit more
+// bandwidth. Sent after Welcome, after executing any command, and on the
+// same cadence as heartbeats.
+message ContainerStateReport {
+  repeated ContainerState containers = 1;
+}

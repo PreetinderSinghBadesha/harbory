@@ -4,14 +4,16 @@ use std::time::Duration;
 use harbory_common::keypair::{verify, Keypair};
 use harbory_protocol::v1::{
     agent_message::Payload as AgentPayload, agent_stream_service_server::AgentStreamService,
-    control_plane_message::Payload as ControlPlanePayload, AgentMessage, Challenge,
-    ControlPlaneMessage, Heartbeat as HeartbeatMsg, HeartbeatAck, Welcome,
+    container_command::Action as ContainerAction, control_plane_message::Payload as ControlPlanePayload,
+    AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, Heartbeat as HeartbeatMsg,
+    HeartbeatAck, PortMapping as ProtoPortMapping, Welcome,
 };
 use rand::RngCore;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::reconcile::{self, Action, ObservedContainer, ObservedStatus};
 use crate::store::Store;
 
 const CHALLENGE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -36,6 +38,66 @@ async fn read_next(inbound: &mut Streaming<AgentMessage>) -> Result<AgentMessage
 
 fn frame(payload: ControlPlanePayload) -> Result<ControlPlaneMessage, Status> {
     Ok(ControlPlaneMessage { payload: Some(payload) })
+}
+
+fn observed_from_proto(state: harbory_protocol::v1::ContainerState) -> ObservedContainer {
+    let status = match ContainerStatus::try_from(state.status).unwrap_or(ContainerStatus::Unspecified) {
+        ContainerStatus::Running => ObservedStatus::Running,
+        ContainerStatus::Stopped => ObservedStatus::Stopped,
+        ContainerStatus::Removed => ObservedStatus::Removed,
+        ContainerStatus::Error | ContainerStatus::Unspecified => ObservedStatus::Error,
+    };
+    ObservedContainer { name: state.name, image: state.image, status }
+}
+
+fn action_to_command(action: Action) -> ContainerCommand {
+    match action {
+        Action::Deploy(d) => ContainerCommand {
+            action: Some(ContainerAction::Deploy(harbory_protocol::v1::ContainerSpec {
+                name: d.name,
+                image: d.image,
+                env: d.env,
+                ports: d
+                    .ports
+                    .into_iter()
+                    .map(|p| ProtoPortMapping { host_port: p.host_port as u32, container_port: p.container_port as u32 })
+                    .collect(),
+                command: d.command,
+            })),
+        },
+        Action::Remove(name) => ContainerCommand { action: Some(ContainerAction::Remove(name)) },
+    }
+}
+
+/// Persists a freshly-reported observed snapshot, diffs it against desired
+/// state, and sends back whatever commands are needed to converge. Returns
+/// `false` if the connection died mid-send (caller should stop looping).
+async fn reconcile_and_dispatch(
+    store: &Store,
+    agent_id: uuid::Uuid,
+    observed: Vec<ObservedContainer>,
+    tx: &Outbound,
+) -> bool {
+    if let Err(err) = store.replace_observed_containers(agent_id, &observed).await {
+        tracing::warn!(%agent_id, ?err, "failed to persist observed container state");
+        return true;
+    }
+
+    let desired = match store.get_desired_containers(agent_id).await {
+        Ok(desired) => desired,
+        Err(err) => {
+            tracing::warn!(%agent_id, ?err, "failed to load desired container state");
+            return true;
+        }
+    };
+
+    for action in reconcile::diff(&desired, &observed) {
+        let command = action_to_command(action);
+        if tx.send(frame(ControlPlanePayload::Command(command))).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Everything that happens on one connection, after the response stream
@@ -128,9 +190,12 @@ async fn drive_connection(
 
     tracing::info!(agent_id = %agent.id, "agent stream authenticated");
 
-    // Step 4: heartbeats, for as long as the connection stays open. No
-    // shared connection registry yet — command dispatch (Phase 3) will
-    // need one; premature before then.
+    // Step 4: heartbeats and container state reports, for as long as the
+    // connection stays open. Commands are dispatched only in response to
+    // a state report (reconcile_and_dispatch), not pushed the instant
+    // desired state changes elsewhere — see docs/reconciliation.md for why
+    // that's an acceptable simplification (no shared connection registry
+    // needed) rather than an oversight.
     let agent_id = agent.id;
     loop {
         match inbound.next().await {
@@ -139,6 +204,12 @@ async fn drive_connection(
                     tracing::warn!(%agent_id, ?err, "failed to record heartbeat");
                 }
                 if tx.send(frame(ControlPlanePayload::HeartbeatAck(HeartbeatAck {}))).await.is_err() {
+                    break;
+                }
+            }
+            Some(Ok(AgentMessage { payload: Some(AgentPayload::StateReport(report)) })) => {
+                let observed: Vec<ObservedContainer> = report.containers.into_iter().map(observed_from_proto).collect();
+                if !reconcile_and_dispatch(&store, agent_id, observed, &tx).await {
                     break;
                 }
             }

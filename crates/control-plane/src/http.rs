@@ -1,14 +1,20 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    routing::{get, put},
+    Json, Router,
+};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::reconcile::{DesiredContainer, DesiredStatus, ObservedContainer, ObservedStatus, PortMapping};
 use crate::store::Store;
 
-/// Minimal JSON status endpoint — a stand-in for the real dashboard (Phase
-/// 5) and its not-yet-chosen frontend stack. Read-only, unauthenticated
-/// (fine for now: nothing sensitive beyond what §3's revocation UI will
-/// need proper auth for anyway).
+/// Minimal JSON status/control endpoint — a stand-in for the real
+/// dashboard (Phase 5) and its not-yet-chosen frontend stack. Read/write,
+/// unauthenticated (fine for now: nothing sensitive beyond what §3's
+/// revocation UI will need proper auth for anyway).
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
@@ -25,18 +31,18 @@ struct AgentSummaryDto {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new().route("/agents", get(list_agents)).with_state(state)
+    Router::new()
+        .route("/agents", get(list_agents))
+        .route("/agents/:agent_id/containers", get(list_containers))
+        .route("/agents/:agent_id/containers/:name", put(put_container).delete(delete_container))
+        .with_state(state)
 }
 
-async fn list_agents(State(state): State<AppState>) -> Result<Json<Vec<AgentSummaryDto>>, axum::http::StatusCode> {
-    let agents = state
-        .store
-        .list_agents(state.online_threshold_seconds)
-        .await
-        .map_err(|err| {
-            tracing::error!(?err, "failed to list agents");
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+async fn list_agents(State(state): State<AppState>) -> Result<Json<Vec<AgentSummaryDto>>, StatusCode> {
+    let agents = state.store.list_agents(state.online_threshold_seconds).await.map_err(|err| {
+        tracing::error!(?err, "failed to list agents");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(Json(
         agents
@@ -50,4 +56,139 @@ async fn list_agents(State(state): State<AppState>) -> Result<Json<Vec<AgentSumm
             })
             .collect(),
     ))
+}
+
+#[derive(Deserialize)]
+struct PortMappingDto {
+    host_port: u16,
+    container_port: u16,
+}
+
+#[derive(Deserialize)]
+struct PutContainerRequest {
+    image: String,
+    #[serde(default)]
+    env: Vec<String>,
+    #[serde(default)]
+    ports: Vec<PortMappingDto>,
+    #[serde(default)]
+    command: Vec<String>,
+}
+
+/// Declares desired state for one container (create it if new, update it
+/// in place if it already exists) — takes effect the next time the agent
+/// reports its state, up to one heartbeat interval later, not instantly.
+/// See docs/reconciliation.md for why that latency is an accepted
+/// trade-off for now rather than a bug.
+async fn put_container(
+    State(state): State<AppState>,
+    Path((agent_id, name)): Path<(Uuid, String)>,
+    Json(req): Json<PutContainerRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let container = DesiredContainer {
+        name,
+        image: req.image,
+        env: req.env,
+        ports: req.ports.into_iter().map(|p| PortMapping { host_port: p.host_port, container_port: p.container_port }).collect(),
+        command: req.command,
+        status: DesiredStatus::Running,
+    };
+
+    state.store.upsert_desired_container(agent_id, &container).await.map_err(|err| {
+        tracing::error!(?err, "failed to upsert desired container");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Marks a container desired-absent. 404 if nothing by that name was ever
+/// declared for this agent — there's no "running" declaration to retract.
+async fn delete_container(
+    State(state): State<AppState>,
+    Path((agent_id, name)): Path<(Uuid, String)>,
+) -> Result<StatusCode, StatusCode> {
+    let found = state.store.set_desired_absent(agent_id, &name).await.map_err(|err| {
+        tracing::error!(?err, "failed to mark desired container absent");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+#[derive(Serialize)]
+struct DesiredContainerDto {
+    name: String,
+    image: String,
+    env: Vec<String>,
+    ports: Vec<PortMappingDto2>,
+    command: Vec<String>,
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+struct PortMappingDto2 {
+    host_port: u16,
+    container_port: u16,
+}
+
+#[derive(Serialize)]
+struct ObservedContainerDto {
+    name: String,
+    image: String,
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+struct ContainersDto {
+    desired: Vec<DesiredContainerDto>,
+    observed: Vec<ObservedContainerDto>,
+}
+
+async fn list_containers(
+    State(state): State<AppState>,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<ContainersDto>, StatusCode> {
+    let desired = state.store.get_desired_containers(agent_id).await.map_err(|err| {
+        tracing::error!(?err, "failed to load desired containers");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let observed = state.store.get_observed_containers(agent_id).await.map_err(|err| {
+        tracing::error!(?err, "failed to load observed containers");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(ContainersDto {
+        desired: desired
+            .into_iter()
+            .map(|d| DesiredContainerDto {
+                name: d.name,
+                image: d.image,
+                env: d.env,
+                ports: d.ports.into_iter().map(|p| PortMappingDto2 { host_port: p.host_port, container_port: p.container_port }).collect(),
+                command: d.command,
+                status: match d.status {
+                    DesiredStatus::Running => "running",
+                    DesiredStatus::Absent => "absent",
+                },
+            })
+            .collect(),
+        observed: observed
+            .into_iter()
+            .map(|o: ObservedContainer| ObservedContainerDto {
+                name: o.name,
+                image: o.image,
+                status: match o.status {
+                    ObservedStatus::Running => "running",
+                    ObservedStatus::Stopped => "stopped",
+                    ObservedStatus::Removed => "removed",
+                    ObservedStatus::Error => "error",
+                },
+            })
+            .collect(),
+    }))
 }

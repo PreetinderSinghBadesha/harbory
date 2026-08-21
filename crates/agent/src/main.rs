@@ -1,4 +1,5 @@
 mod backoff;
+mod container;
 mod stream;
 
 use std::path::PathBuf;
@@ -7,6 +8,7 @@ use harbory_common::keypair::Keypair;
 use harbory_protocol::v1::{pairing_service_client::PairingServiceClient, RegisterRequest};
 
 use backoff::Backoff;
+use container::ContainerManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,12 +42,17 @@ async fn main() -> anyhow::Result<()> {
         pair(&control_plane_addr, &identity, &pairing_token, &credential_path).await?
     };
 
+    // Fail fast rather than silently degrade: Phase 3's whole job for this
+    // binary is container management, so a missing/unreachable Docker
+    // daemon is a startup error, not a background warning.
+    let containers = ContainerManager::connect()?;
+
     // Transient disconnects (network blips, control-plane restarts) don't
     // require re-pairing — this loop just keeps reusing the stored
     // credential and identity, per the security model.
     let mut backoff = Backoff::default();
     loop {
-        match stream::run_stream(&control_plane_addr, &identity, &credential).await {
+        match stream::run_stream(&control_plane_addr, &identity, &credential, &containers).await {
             Ok(()) => backoff.reset(),
             Err(err) => {
                 let delay = backoff.next_delay();
