@@ -61,15 +61,22 @@ export function Dashboard() {
   return (
     <div className="page">
       <header className="page-header">
-        <h1>Harbory</h1>
-        <button type="button" onClick={() => supabase.auth.signOut()}>
+        <Link to="/" className="page-brand">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--h-accent)" strokeWidth="1.6" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 2.5 L21 7.5 V16.5 L12 21.5 L3 16.5 V7.5 Z" />
+            <path d="M3 7.5 L12 12.5 L21 7.5" />
+            <path d="M12 12.5 V21.5" />
+          </svg>
+          Harbory
+        </Link>
+        <button type="button" className="btn btn-ghost" onClick={() => supabase.auth.signOut()}>
           Sign out
         </button>
       </header>
 
       <section>
         <h2>Pair a new agent</h2>
-        <button type="button" onClick={() => issueToken.mutate()} disabled={issueToken.isPending}>
+        <button type="button" className="btn btn-primary" onClick={() => issueToken.mutate()} disabled={issueToken.isPending}>
           Generate pairing token
         </button>
         {issueToken.isError && <p className="error">{(issueToken.error as Error).message}</p>}
@@ -80,7 +87,9 @@ export function Dashboard() {
                the dashboard can retrieve again. */}
             <p>Token (expires {new Date(pairingToken.expires_at).toLocaleString()}), single-use — copy it now:</p>
             <code>{pairingToken.token}</code>
-            <p>Run on the target VM:</p>
+            <p>On the target VM, first time only (needs a Rust toolchain — installs just the agent binary, not this repo):</p>
+            <pre>cargo install --git https://github.com/PreetinderSinghBadesha/harbory.git --bin harbory-agent</pre>
+            <p>Then run:</p>
             <pre>harbory-agent {pairingToken.token}</pre>
           </div>
         )}
@@ -107,12 +116,23 @@ export function Dashboard() {
                   <td>
                     <Link to={`/agents/${a.id}`}>{a.id.slice(0, 8)}</Link>
                   </td>
-                  <td>{a.status}</td>
-                  <td>{a.online ? "online" : "offline"}</td>
+                  <td>
+                    <span className={a.status === "active" ? "badge badge-ok" : "badge badge-warn"}>{a.status}</span>
+                  </td>
+                  <td>
+                    <span className={a.online ? "badge badge-ok" : "badge badge-off"}>
+                      {a.online ? "online" : "offline"}
+                    </span>
+                  </td>
                   <td>{a.last_heartbeat_at ? new Date(a.last_heartbeat_at).toLocaleString() : "—"}</td>
                   <td>
                     {a.status === "active" && (
-                      <button type="button" onClick={() => revoke.mutate(a.id)} disabled={revoke.isPending}>
+                      <button
+                        type="button"
+                        className="btn btn-danger btn-sm"
+                        onClick={() => revoke.mutate(a.id)}
+                        disabled={revoke.isPending}
+                      >
                         Revoke
                       </button>
                     )}

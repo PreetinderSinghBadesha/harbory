@@ -105,7 +105,12 @@ export function AgentDetail() {
     <div className="page">
       <header className="page-header">
         <h1>Agent {agentId?.slice(0, 8)}</h1>
-        <Link to="/">Back to agents</Link>
+        <Link to="/dashboard" className="page-back">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M19 12H5M12 19l-7-7 7-7" />
+          </svg>
+          Back to agents
+        </Link>
       </header>
 
       <section>
@@ -135,7 +140,7 @@ export function AgentDetail() {
                     <td>{d.status}</td>
                     <td>{observed?.status ?? "—"}</td>
                     <td>
-                      <button type="button" onClick={() => removeContainer.mutate(d.name)}>
+                      <button type="button" className="btn btn-danger btn-sm" onClick={() => removeContainer.mutate(d.name)}>
                         Remove
                       </button>
                     </td>
@@ -148,7 +153,7 @@ export function AgentDetail() {
         <form onSubmit={handleDeployContainer} className="inline-form">
           <input placeholder="name" value={containerName} onChange={(e) => setContainerName(e.target.value)} required />
           <input placeholder="image (e.g. nginx:alpine)" value={image} onChange={(e) => setImage(e.target.value)} required />
-          <button type="submit" disabled={deployContainer.isPending}>
+          <button type="submit" className="btn btn-primary" disabled={deployContainer.isPending}>
             Deploy
           </button>
         </form>
@@ -179,7 +184,7 @@ export function AgentDetail() {
                     {r.upstream_host}:{r.upstream_port}
                   </td>
                   <td>
-                    <button type="button" onClick={() => removeRoute.mutate(r.name)}>
+                    <button type="button" className="btn btn-danger btn-sm" onClick={() => removeRoute.mutate(r.name)}>
                       Remove
                     </button>
                   </td>
@@ -206,7 +211,7 @@ export function AgentDetail() {
             onChange={(e) => setUpstreamPort(Number(e.target.value))}
             required
           />
-          <button type="submit" disabled={deployRoute.isPending}>
+          <button type="submit" className="btn btn-primary" disabled={deployRoute.isPending}>
             Deploy route
           </button>
         </form>
