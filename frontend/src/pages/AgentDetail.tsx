@@ -2,6 +2,15 @@ import { useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
+import { spriteFor } from "../lib/agentSprite";
+import "../styles/GameHud.css";
+
+interface AgentSummary {
+  id: string;
+  status: string;
+  online: boolean;
+  last_heartbeat_at: string | null;
+}
 
 interface DesiredContainer {
   name: string;
@@ -32,9 +41,34 @@ interface ProxyRoutesResponse {
   error: string | null;
 }
 
+function HpBar({ online }: { online: boolean }) {
+  return (
+    <div className="hp-bar" style={{ justifyContent: "flex-start", marginBottom: 6 }}>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <span key={i} className={online ? "hp-pip hp-pip-on hp-pip-big" : "hp-pip hp-pip-big"} />
+      ))}
+    </div>
+  );
+}
+
 export function AgentDetail() {
   const { agentId } = useParams<{ agentId: string }>();
   const queryClient = useQueryClient();
+
+  // No single-agent endpoint exists — the list is the only source for this
+  // agent's own status/online/last-heartbeat, so this page shares the same
+  // query (and cache) the dashboard uses rather than inventing a new call.
+  const { data: agents } = useQuery({
+    queryKey: ["agents"],
+    queryFn: () => apiFetch<AgentSummary[]>("/agents"),
+    refetchInterval: 5000,
+  });
+  const agent = agents?.find((a) => a.id === agentId);
+
+  const revoke = useMutation({
+    mutationFn: () => apiFetch<void>(`/agents/${agentId}/revoke`, { method: "POST" }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agents"] }),
+  });
 
   const containers = useQuery({
     queryKey: ["containers", agentId],
@@ -101,122 +135,236 @@ export function AgentDetail() {
     deployRoute.mutate();
   }
 
+  const sprite = agentId ? spriteFor(agentId) : null;
+
   return (
-    <div className="page">
-      <header className="page-header">
-        <h1>Agent {agentId?.slice(0, 8)}</h1>
-        <Link to="/dashboard" className="page-back">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M19 12H5M12 19l-7-7 7-7" />
-          </svg>
-          Back to agents
-        </Link>
+    <div className="game-hud">
+      <header style={{ background: "var(--panel)", borderBottom: "4px solid var(--ink)", padding: "20px 32px" }}>
+        <div style={{ maxWidth: 1180, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div
+              className="pixel-panel-sm"
+              style={{ width: 36, height: 36, background: "var(--clay)", display: "flex", alignItems: "center", justifyContent: "center" }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round">
+                <path d="M12 2.5 L21 7.5 V16.5 L12 21.5 L3 16.5 V7.5 Z" />
+                <path d="M3 7.5 L12 12.5 L21 7.5" />
+                <path d="M12 12.5 V21.5" />
+              </svg>
+            </div>
+            <span className="pixel" style={{ fontSize: 16 }}>HARBORY</span>
+          </div>
+          <Link to="/dashboard" className="pixel-btn pixel-btn-ghost pixel-btn-sm">
+            ← BACK
+          </Link>
+        </div>
       </header>
 
-      <section>
-        <h2>Containers</h2>
-        <p className="hint">
-          Changes take effect the next time this agent reports its state — up to one heartbeat
-          interval, not instantly. See docs/reconciliation.md.
-        </p>
-        {containers.data && containers.data.desired.length > 0 && (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Image</th>
-                <th>Desired</th>
-                <th>Observed</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {containers.data.desired.map((d) => {
-                const observed = containers.data?.observed.find((o) => o.name === d.name);
-                return (
-                  <tr key={d.name}>
-                    <td>{d.name}</td>
-                    <td>{d.image}</td>
-                    <td>{d.status}</td>
-                    <td>{observed?.status ?? "—"}</td>
-                    <td>
-                      <button type="button" className="btn btn-danger btn-sm" onClick={() => removeContainer.mutate(d.name)}>
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-        <form onSubmit={handleDeployContainer} className="inline-form">
-          <input placeholder="name" value={containerName} onChange={(e) => setContainerName(e.target.value)} required />
-          <input placeholder="image (e.g. nginx:alpine)" value={image} onChange={(e) => setImage(e.target.value)} required />
-          <button type="submit" className="btn btn-primary" disabled={deployContainer.isPending}>
-            Deploy
-          </button>
-        </form>
-        {deployContainer.isError && <p className="error">{(deployContainer.error as Error).message}</p>}
-      </section>
+      <main style={{ maxWidth: 1180, margin: "0 auto", padding: "44px 32px 90px" }}>
+        <section>
+          <div className="pixel-panel" style={{ padding: 0, overflow: "hidden" }}>
+            <div
+              style={{
+                background: "linear-gradient(180deg, #DCEBFF 0%, var(--bg) 100%)",
+                padding: "28px 30px 20px",
+                borderBottom: "4px solid var(--ink)",
+                boxShadow: "inset 0 3px 0 rgba(255,255,255,0.5)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 16,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+                <div>
+                  <div className={`sprite-stage sprite-stage-big ${agent?.online ? "sprite-online" : "sprite-offline"}`}>
+                    {sprite &&
+                      (agent?.online ? (
+                        <>
+                          <img className="f1" src={sprite.drive1} alt="" />
+                          <img className="f2" src={sprite.drive2} alt="" />
+                        </>
+                      ) : (
+                        <img
+                          src={sprite.hurt}
+                          alt=""
+                          style={{ position: "relative", width: "100%", height: "100%", objectFit: "contain" }}
+                        />
+                      ))}
+                  </div>
+                  <div className="ground" style={{ width: 130, marginTop: 8 }} />
+                </div>
+                <div>
+                  <div className="eyebrow" style={{ marginBottom: 6 }}>AGENT</div>
+                  <div className="mono" style={{ fontSize: 24, fontWeight: 700, marginBottom: 10 }}>
+                    {agentId?.slice(0, 8)}
+                  </div>
+                  {agent && <HpBar online={agent.online} />}
+                  <span className="mono" style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
+                    {agent?.online
+                      ? "online"
+                      : agent?.last_heartbeat_at
+                        ? `last seen ${new Date(agent.last_heartbeat_at).toLocaleString()}`
+                        : "never seen"}
+                  </span>
+                </div>
+              </div>
+              {agent?.status === "active" && (
+                <button
+                  type="button"
+                  className="pixel-btn pixel-btn-danger"
+                  onClick={() => revoke.mutate()}
+                  disabled={revoke.isPending}
+                >
+                  REVOKE
+                </button>
+              )}
+            </div>
 
-      <section>
-        <h2>Proxy routes</h2>
-        {proxyRoutes.data?.error && <p className="error">Last apply error: {proxyRoutes.data.error}</p>}
-        {proxyRoutes.data && proxyRoutes.data.desired.length > 0 && (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Server name</th>
-                <th>Listen</th>
-                <th>Upstream</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {proxyRoutes.data.desired.map((r) => (
-                <tr key={r.name}>
-                  <td>{r.name}</td>
-                  <td>{r.server_name || "(catch-all)"}</td>
-                  <td>{r.listen_port}</td>
-                  <td>
-                    {r.upstream_host}:{r.upstream_port}
-                  </td>
-                  <td>
-                    <button type="button" className="btn btn-danger btn-sm" onClick={() => removeRoute.mutate(r.name)}>
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        <form onSubmit={handleDeployRoute} className="inline-form">
-          <input placeholder="name" value={routeName} onChange={(e) => setRouteName(e.target.value)} required />
-          <input placeholder="server_name (optional)" value={serverName} onChange={(e) => setServerName(e.target.value)} />
-          <input
-            type="number"
-            placeholder="listen port"
-            value={listenPort}
-            onChange={(e) => setListenPort(Number(e.target.value))}
-            required
-          />
-          <input placeholder="upstream host" value={upstreamHost} onChange={(e) => setUpstreamHost(e.target.value)} required />
-          <input
-            type="number"
-            placeholder="upstream port"
-            value={upstreamPort}
-            onChange={(e) => setUpstreamPort(Number(e.target.value))}
-            required
-          />
-          <button type="submit" className="btn btn-primary" disabled={deployRoute.isPending}>
-            Deploy route
-          </button>
-        </form>
-        {deployRoute.isError && <p className="error">{(deployRoute.error as Error).message}</p>}
-      </section>
+            <div style={{ padding: "26px 30px" }}>
+              <div style={{ marginBottom: 24 }}>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>CONTAINERS</div>
+                <p className="mono" style={{ fontSize: 11, color: "var(--muted)", marginTop: 0 }}>
+                  Changes take effect the next time this agent reports its state — up to one heartbeat interval, not
+                  instantly.
+                </p>
+                {containers.data && containers.data.desired.length > 0 && (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>NAME</th>
+                        <th>IMAGE</th>
+                        <th>DESIRED</th>
+                        <th>OBSERVED</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {containers.data.desired.map((d) => {
+                        const observed = containers.data?.observed.find((o) => o.name === d.name);
+                        return (
+                          <tr key={d.name}>
+                            <td>{d.name}</td>
+                            <td>{d.image}</td>
+                            <td>
+                              <span className="badge" style={{ background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }}>
+                                {d.status.toUpperCase()}
+                              </span>
+                            </td>
+                            <td>
+                              {observed ? (
+                                <span className="badge" style={{ background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }}>
+                                  {observed.status.toUpperCase()}
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                                onClick={() => removeContainer.mutate(d.name)}
+                              >
+                                REMOVE
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+                <form onSubmit={handleDeployContainer} className="inline-form">
+                  <input placeholder="name" value={containerName} onChange={(e) => setContainerName(e.target.value)} required />
+                  <input
+                    placeholder="image (e.g. nginx:alpine)"
+                    value={image}
+                    onChange={(e) => setImage(e.target.value)}
+                    required
+                  />
+                  <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployContainer.isPending}>
+                    DEPLOY
+                  </button>
+                </form>
+                {deployContainer.isError && <div className="alert-row">{(deployContainer.error as Error).message}</div>}
+              </div>
+
+              <div>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>PROXY ROUTES</div>
+                {proxyRoutes.data?.error && <div className="alert-row">Last apply error: {proxyRoutes.data.error}</div>}
+                {proxyRoutes.data && proxyRoutes.data.desired.length > 0 && (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>NAME</th>
+                        <th>SERVER NAME</th>
+                        <th>LISTEN</th>
+                        <th>UPSTREAM</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {proxyRoutes.data.desired.map((r) => (
+                        <tr key={r.name}>
+                          <td>{r.name}</td>
+                          <td>{r.server_name || "(catch-all)"}</td>
+                          <td>{r.listen_port}</td>
+                          <td>
+                            {r.upstream_host}:{r.upstream_port}
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                              onClick={() => removeRoute.mutate(r.name)}
+                            >
+                              REMOVE
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <form onSubmit={handleDeployRoute} className="inline-form">
+                  <input placeholder="name" value={routeName} onChange={(e) => setRouteName(e.target.value)} required />
+                  <input
+                    placeholder="server_name (optional)"
+                    value={serverName}
+                    onChange={(e) => setServerName(e.target.value)}
+                  />
+                  <input
+                    type="number"
+                    placeholder="listen port"
+                    value={listenPort}
+                    onChange={(e) => setListenPort(Number(e.target.value))}
+                    required
+                  />
+                  <input
+                    placeholder="upstream host"
+                    value={upstreamHost}
+                    onChange={(e) => setUpstreamHost(e.target.value)}
+                    required
+                  />
+                  <input
+                    type="number"
+                    placeholder="upstream port"
+                    value={upstreamPort}
+                    onChange={(e) => setUpstreamPort(Number(e.target.value))}
+                    required
+                  />
+                  <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployRoute.isPending}>
+                    DEPLOY ROUTE
+                  </button>
+                </form>
+                {deployRoute.isError && <div className="alert-row">{(deployRoute.error as Error).message}</div>}
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
   );
 }

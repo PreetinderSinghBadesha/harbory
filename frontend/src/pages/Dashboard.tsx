@@ -1,8 +1,11 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { supabase } from "../lib/supabase";
+import { useAuth } from "../context/AuthContext";
+import { misuseIcon, spriteFor } from "../lib/agentSprite";
+import "../styles/GameHud.css";
 
 interface AgentSummary {
   id: string;
@@ -32,8 +35,101 @@ const EVENT_LABELS: Record<string, string> = {
   agent_revoked: "Agent revoked",
 };
 
+function AgentSprite({ agent }: { agent: AgentSummary }) {
+  const sprite = spriteFor(agent.id);
+  return (
+    <div className="sprite-sky">
+      <div className={`sprite-stage ${agent.online ? "sprite-online" : "sprite-offline"}`}>
+        {agent.online ? (
+          <>
+            <img className="f1" src={sprite.drive1} alt="" />
+            <img className="f2" src={sprite.drive2} alt="" />
+          </>
+        ) : (
+          <img src={sprite.hurt} alt="" style={{ position: "relative", width: "100%", height: "100%", objectFit: "contain" }} />
+        )}
+      </div>
+      <div className="ground" style={{ margin: "8px 0 0" }} />
+    </div>
+  );
+}
+
+function HpBar({ online }: { online: boolean }) {
+  return (
+    <div className="hp-bar" style={{ marginBottom: 8 }}>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <span key={i} className={online ? "hp-pip hp-pip-on" : "hp-pip"} />
+      ))}
+    </div>
+  );
+}
+
+function formatCountdown(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** The countdown and its progress bar are both driven by the token's real
+ * `expires_at` — `issuedAt` is just the moment this component first saw
+ * the token, captured once, so the bar's total length reflects the
+ * server's real TTL rather than a guessed constant. */
+function PairingTokenCard({ token, issuedAt }: { token: PairingToken; issuedAt: number }) {
+  const expiresAt = useMemo(() => new Date(token.expires_at).getTime(), [token.expires_at]);
+  const totalMs = Math.max(expiresAt - issuedAt, 1);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const remainingMs = Math.max(expiresAt - now, 0);
+  const progress = Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
+  const expired = remainingMs <= 0;
+
+  return (
+    <div style={{ flex: 1, minWidth: 300 }}>
+      <div
+        className="pixel-panel-sm mono"
+        style={{
+          display: "inline-block",
+          padding: "10px 14px",
+          fontSize: 13,
+          fontWeight: 700,
+          color: "var(--clay-dark)",
+          background: "#FFF9EE",
+          marginBottom: 12,
+          wordBreak: "break-all",
+        }}
+      >
+        {token.token}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1, height: 10, background: "var(--line)", border: "2px solid var(--ink)" }}>
+          <div
+            style={{
+              width: `${progress}%`,
+              height: "100%",
+              background: expired ? "var(--muted)" : "linear-gradient(180deg, #FFE07A 0%, var(--gold) 100%)",
+            }}
+          />
+        </div>
+        <span className="mono" style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700, whiteSpace: "nowrap" }}>
+          {expired ? "EXPIRED" : formatCountdown(remainingMs)}
+        </span>
+      </div>
+      <div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+        cargo install --git https://github.com/PreetinderSinghBadesha/harbory.git harbory-agent
+      </div>
+    </div>
+  );
+}
+
 export function Dashboard() {
   const queryClient = useQueryClient();
+  const { session } = useAuth();
 
   const { data: agents, isLoading } = useQuery({
     queryKey: ["agents"],
@@ -42,9 +138,13 @@ export function Dashboard() {
   });
 
   const [pairingToken, setPairingToken] = useState<PairingToken | null>(null);
+  const [pairingIssuedAt, setPairingIssuedAt] = useState(0);
   const issueToken = useMutation({
     mutationFn: () => apiFetch<PairingToken>("/pairing-tokens", { method: "POST", body: JSON.stringify({}) }),
-    onSuccess: setPairingToken,
+    onSuccess: (data) => {
+      setPairingToken(data);
+      setPairingIssuedAt(Date.now());
+    },
   });
 
   const revoke = useMutation({
@@ -58,106 +158,187 @@ export function Dashboard() {
     refetchInterval: 10000,
   });
 
+  const onlineCount = agents?.filter((a) => a.online).length ?? 0;
+
   return (
-    <div className="page">
-      <header className="page-header">
-        <Link to="/" className="page-brand">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--h-accent)" strokeWidth="1.6" strokeLinejoin="round" aria-hidden="true">
-            <path d="M12 2.5 L21 7.5 V16.5 L12 21.5 L3 16.5 V7.5 Z" />
-            <path d="M3 7.5 L12 12.5 L21 7.5" />
-            <path d="M12 12.5 V21.5" />
-          </svg>
-          Harbory
-        </Link>
-        <button type="button" className="btn btn-ghost" onClick={() => supabase.auth.signOut()}>
-          Sign out
-        </button>
+    <div className="game-hud">
+      <header style={{ background: "var(--panel)", borderBottom: "4px solid var(--ink)", padding: "20px 32px" }}>
+        <div style={{ maxWidth: 1180, margin: "0 auto" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div
+                className="pixel-panel-sm"
+                style={{ width: 36, height: 36, background: "var(--clay)", display: "flex", alignItems: "center", justifyContent: "center" }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round">
+                  <path d="M12 2.5 L21 7.5 V16.5 L12 21.5 L3 16.5 V7.5 Z" />
+                  <path d="M3 7.5 L12 12.5 L21 7.5" />
+                  <path d="M12 12.5 V21.5" />
+                </svg>
+              </div>
+              <span className="pixel" style={{ fontSize: 16 }}>HARBORY</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+              {session?.user.email && (
+                <span className="mono" style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
+                  PLAYER: {session.user.email}
+                </span>
+              )}
+              <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={() => supabase.auth.signOut()}>
+                SIGN OUT
+              </button>
+            </div>
+          </div>
+
+          <div
+            className="pixel-panel-sm"
+            style={{
+              background: "linear-gradient(180deg, #35291C 0%, var(--ink) 100%)",
+              padding: "10px 16px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <span className="pixel" style={{ fontSize: 10, color: "var(--gold)" }}>
+              AGENTS ONLINE: {onlineCount}/{agents?.length ?? 0}
+            </span>
+            {agents && agents.length > 0 && (
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                {agents.map((a, i) => (
+                  <div
+                    key={a.id}
+                    style={{
+                      width: 14,
+                      height: 14,
+                      background: a.online ? "var(--hp)" : "#5A5044",
+                      border: "2px solid #fff",
+                      animation: a.online ? "hud-blip 1.6s ease-in-out infinite" : "none",
+                      animationDelay: `${i * 0.3}s`,
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </header>
 
-      <section>
-        <h2>Pair a new agent</h2>
-        <button type="button" className="btn btn-primary" onClick={() => issueToken.mutate()} disabled={issueToken.isPending}>
-          Generate pairing token
-        </button>
-        {issueToken.isError && <p className="error">{(issueToken.error as Error).message}</p>}
-        {pairingToken && (
-          <div className="pairing-token">
-            {/* Single-use, shown once — matches the security model (§3): a
-               pairing token is displayed here and never stored anywhere
-               the dashboard can retrieve again. */}
-            <p>Token (expires {new Date(pairingToken.expires_at).toLocaleString()}), single-use — copy it now:</p>
-            <code>{pairingToken.token}</code>
-            <p>On the target VM, first time only (needs a Rust toolchain — installs just the agent binary, not this repo):</p>
-            <pre>cargo install --git https://github.com/PreetinderSinghBadesha/harbory.git harbory-agent</pre>
-            <p>Then run:</p>
-            <pre>harbory-agent {pairingToken.token}</pre>
+      <main style={{ maxWidth: 1180, margin: "0 auto", padding: "44px 32px 90px" }}>
+        <section style={{ marginBottom: 48 }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 22 }}>
+            <h1 className="pixel" style={{ fontSize: 16, margin: 0 }}>YOUR PARTY</h1>
+            <span className="mono" style={{ fontSize: 12, color: "var(--muted)", fontWeight: 700 }}>
+              {agents?.length ?? 0} UNIT{agents?.length === 1 ? "" : "S"}
+            </span>
           </div>
-        )}
-      </section>
 
-      <section>
-        <h2>Agents</h2>
-        {isLoading && <p className="page-status">Loading…</p>}
-        {agents && agents.length === 0 && <p className="page-status">No agents paired yet.</p>}
-        {agents && agents.length > 0 && (
-          <table>
-            <thead>
-              <tr>
-                <th>Agent</th>
-                <th>Status</th>
-                <th>Online</th>
-                <th>Last heartbeat</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
+          {isLoading && <p className="mono" style={{ color: "var(--muted)" }}>Loading…</p>}
+          {agents && agents.length === 0 && <p className="mono" style={{ color: "var(--muted)" }}>No agents paired yet.</p>}
+
+          {agents && agents.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 18 }}>
               {agents.map((a) => (
-                <tr key={a.id}>
-                  <td>
-                    <Link to={`/agents/${a.id}`}>{a.id.slice(0, 8)}</Link>
-                  </td>
-                  <td>
-                    <span className={a.status === "active" ? "badge badge-ok" : "badge badge-warn"}>{a.status}</span>
-                  </td>
-                  <td>
-                    <span className={a.online ? "badge badge-ok" : "badge badge-off"}>
-                      {a.online ? "online" : "offline"}
-                    </span>
-                  </td>
-                  <td>{a.last_heartbeat_at ? new Date(a.last_heartbeat_at).toLocaleString() : "—"}</td>
-                  <td>
-                    {a.status === "active" && (
-                      <button
-                        type="button"
-                        className="btn btn-danger btn-sm"
-                        onClick={() => revoke.mutate(a.id)}
-                        disabled={revoke.isPending}
-                      >
-                        Revoke
-                      </button>
-                    )}
-                  </td>
-                </tr>
+                <div key={a.id} className="pixel-panel" style={{ padding: "20px 12px 16px", textAlign: "center" }}>
+                  <AgentSprite agent={a} />
+                  <Link
+                    to={`/agents/${a.id}`}
+                    className="mono"
+                    style={{ display: "block", fontSize: 12, fontWeight: 700, margin: "12px 0 8px" }}
+                  >
+                    {a.id.slice(0, 8)}
+                  </Link>
+                  <HpBar online={a.online} />
+                  <div className={a.status === "active" ? "status-tag status-tag-active" : "status-tag status-tag-revoked"}>
+                    {a.status.toUpperCase()}
+                  </div>
+                  <div className="mono" style={{ fontSize: 10, color: "var(--muted)", marginTop: 6 }}>
+                    {a.last_heartbeat_at ? new Date(a.last_heartbeat_at).toLocaleTimeString() : "never seen"}
+                  </div>
+                  {a.status === "active" && (
+                    <button
+                      type="button"
+                      className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                      style={{ marginTop: 10 }}
+                      onClick={() => revoke.mutate(a.id)}
+                      disabled={revoke.isPending}
+                    >
+                      REVOKE
+                    </button>
+                  )}
+                </div>
               ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+            </div>
+          )}
+        </section>
 
-      <section>
-        <h2>Activity</h2>
-        {securityEvents && securityEvents.length === 0 && <p className="page-status">No activity yet.</p>}
-        {securityEvents && securityEvents.length > 0 && (
-          <ul className="activity-list">
-            {securityEvents.map((e, i) => (
-              <li key={i} className={e.is_misuse_signal ? "activity-item activity-item-warn" : "activity-item"}>
-                <span>{EVENT_LABELS[e.event_type] ?? e.event_type}</span>
-                <span className="activity-time">{new Date(e.created_at).toLocaleString()}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+        <section style={{ marginBottom: 48 }}>
+          <div className="pixel-panel" style={{ padding: "28px 30px" }}>
+            <div className="eyebrow">★ NEW RECRUIT</div>
+            <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 26, flexWrap: "wrap" }}>
+              {pairingToken ? (
+                <PairingTokenCard token={pairingToken} issuedAt={pairingIssuedAt} />
+              ) : (
+                <p className="mono" style={{ color: "var(--muted)", margin: 0 }}>
+                  Generate a token to pair a new agent.
+                </p>
+              )}
+              <button type="button" className="pixel-btn" onClick={() => issueToken.mutate()} disabled={issueToken.isPending}>
+                GENERATE TOKEN
+              </button>
+            </div>
+            {issueToken.isError && <div className="alert-row">{(issueToken.error as Error).message}</div>}
+          </div>
+        </section>
+
+        <section>
+          <div className="eyebrow">QUEST LOG</div>
+          {securityEvents && securityEvents.length === 0 && (
+            <p className="mono" style={{ color: "var(--muted)" }}>No activity yet.</p>
+          )}
+          {securityEvents && securityEvents.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {securityEvents.map((e, i) => (
+                <div
+                  key={i}
+                  className="pixel-panel-sm"
+                  style={{
+                    padding: "12px 16px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    ...(e.is_misuse_signal ? { background: "#FFF1F1" } : {}),
+                  }}
+                >
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      color: e.is_misuse_signal ? "var(--danger-dark)" : undefined,
+                    }}
+                  >
+                    {e.is_misuse_signal ? (
+                      <img src={misuseIcon} alt="" style={{ width: 20, height: 20, objectFit: "contain" }} />
+                    ) : (
+                      <span
+                        style={{ width: 12, height: 12, background: "var(--hp)", border: "2px solid var(--ink)", display: "inline-block" }}
+                      />
+                    )}
+                    {EVENT_LABELS[e.event_type] ?? e.event_type}
+                  </span>
+                  <span className="mono" style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                    {new Date(e.created_at).toLocaleString()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </main>
     </div>
   );
 }
