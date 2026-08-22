@@ -43,3 +43,15 @@ export function spriteColorFor(agentId: string): SpriteColor {
 export function spriteFor(agentId: string) {
   return SPRITES[spriteColorFor(agentId)];
 }
+
+export type AgentSituation = "online" | "offline" | "revoked";
+
+/** Revoked overrides online/offline — a revoked agent that's still
+ * technically connected (e.g. hasn't been kicked off its stream yet)
+ * should still read as "disabled," not "happily online." Centralized
+ * here since Dashboard and AgentDetail both need the same three-way
+ * read of the same two fields. */
+export function situationFor(agent: { status: string; online: boolean }): AgentSituation {
+  if (agent.status !== "active") return "revoked";
+  return agent.online ? "online" : "offline";
+}

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "../context/AuthContext";
-import { misuseIcon, spriteFor } from "../lib/agentSprite";
+import { misuseIcon, situationFor, spriteFor } from "../lib/agentSprite";
 import { CopyButton } from "../components/CopyButton";
 import "../styles/GameHud.css";
 
@@ -40,10 +40,11 @@ const EVENT_LABELS: Record<string, string> = {
 
 function AgentSprite({ agent }: { agent: AgentSummary }) {
   const sprite = spriteFor(agent.id);
+  const situation = situationFor(agent);
   return (
     <div className="sprite-sky">
-      <div className={`sprite-stage ${agent.online ? "sprite-online" : "sprite-offline"}`}>
-        {agent.online ? (
+      <div className={`sprite-stage sprite-${situation}`}>
+        {situation === "online" ? (
           <>
             <img className="f1" src={sprite.drive1} alt="" />
             <img className="f2" src={sprite.drive2} alt="" />

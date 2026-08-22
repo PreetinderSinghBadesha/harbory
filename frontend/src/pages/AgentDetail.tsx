@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
-import { spriteFor } from "../lib/agentSprite";
+import { situationFor, spriteFor } from "../lib/agentSprite";
 import "../styles/GameHud.css";
 
 interface AgentSummary {
@@ -136,6 +136,7 @@ export function AgentDetail() {
   }
 
   const sprite = agentId ? spriteFor(agentId) : null;
+  const situation = agent ? situationFor(agent) : "offline";
 
   return (
     <div className="game-hud">
@@ -178,9 +179,9 @@ export function AgentDetail() {
             >
               <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
                 <div>
-                  <div className={`sprite-stage sprite-stage-big ${agent?.online ? "sprite-online" : "sprite-offline"}`}>
+                  <div className={`sprite-stage sprite-stage-big sprite-${situation}`}>
                     {sprite &&
-                      (agent?.online ? (
+                      (situation === "online" ? (
                         <>
                           <img className="f1" src={sprite.drive1} alt="" />
                           <img className="f2" src={sprite.drive2} alt="" />
@@ -202,11 +203,13 @@ export function AgentDetail() {
                   </div>
                   {agent && <HpBar online={agent.online} />}
                   <span className="mono" style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
-                    {agent?.online
-                      ? "online"
-                      : agent?.last_heartbeat_at
-                        ? `last seen ${new Date(agent.last_heartbeat_at).toLocaleString()}`
-                        : "never seen"}
+                    {situation === "revoked"
+                      ? "revoked"
+                      : agent?.online
+                        ? "online"
+                        : agent?.last_heartbeat_at
+                          ? `last seen ${new Date(agent.last_heartbeat_at).toLocaleString()}`
+                          : "never seen"}
                   </span>
                 </div>
               </div>
