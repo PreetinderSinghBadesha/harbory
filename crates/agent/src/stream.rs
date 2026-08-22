@@ -56,7 +56,8 @@ pub async fn run_stream(
     containers: &ContainerManager,
     proxy: &ProxyManager,
 ) -> anyhow::Result<()> {
-    let mut client = AgentStreamServiceClient::connect(control_plane_addr.to_string()).await?;
+    let channel = crate::transport::connect(control_plane_addr).await?;
+    let mut client = AgentStreamServiceClient::new(channel);
 
     let (tx, rx) = mpsc::channel::<AgentMessage>(16);
     let outbound = ReceiverStream::new(rx);

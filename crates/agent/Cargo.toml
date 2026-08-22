@@ -8,7 +8,10 @@ harbory-protocol = { path = "../protocol" }
 harbory-common = { path = "../common" }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-tonic = { workspace = true }
+# rustls (not native-tls/openssl) to match the rest of the workspace's TLS
+# stack — used when CONTROL_PLANE_ADDR is `https://`, e.g. an agent
+# reaching the control plane's gRPC port through a TLS-terminating nginx.
+tonic = { workspace = true, features = ["tls", "tls-webpki-roots"] }
 anyhow = { workspace = true }
 rand = { workspace = true }
 tracing = { workspace = true }

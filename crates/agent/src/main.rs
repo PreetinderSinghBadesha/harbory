@@ -2,6 +2,7 @@ mod backoff;
 mod container;
 mod proxy;
 mod stream;
+mod transport;
 
 use std::path::PathBuf;
 
@@ -82,7 +83,8 @@ async fn pair(
     pairing_token: &str,
     credential_path: &PathBuf,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut client = PairingServiceClient::connect(control_plane_addr.to_string()).await?;
+    let channel = transport::connect(control_plane_addr).await?;
+    let mut client = PairingServiceClient::new(channel);
     let response = client
         .register(RegisterRequest {
             pairing_token: pairing_token.to_string(),
