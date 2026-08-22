@@ -131,6 +131,7 @@ harbory/
 │   ├── proxy-management.md
 │   ├── dashboard.md
 │   └── observability.md
+├── deploy/                # systemd-based installer scripts for both binaries
 ├── frontend/              # React + Vite + TypeScript dashboard (Phase 5)
 ├── HARBORY_README.md      # this file
 └── Cargo.toml              # workspace root
