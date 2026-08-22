@@ -4,6 +4,7 @@ use harbory_common::keypair::Keypair;
 use harbory_control_plane::{
     grpc::PairingServiceImpl,
     http::{self, AppState},
+    jwks::JwkVerifier,
     store::Store,
     stream::AgentStreamServiceImpl,
 };
@@ -35,16 +36,26 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MISSED_HEARTBEAT_THRESHOLD);
-    // Required, no insecure default: every HTTP endpoint now verifies a
-    // Supabase-issued JWT against this secret (see docs/dashboard.md for
-    // where to find it in the Supabase dashboard). Failing to set it is a
-    // startup error, not a silently-open API.
-    let jwt_secret = std::env::var("SUPABASE_JWT_SECRET")
-        .map_err(|_| anyhow::anyhow!("SUPABASE_JWT_SECRET must be set — see docs/dashboard.md"))?;
+    // Every HTTP endpoint verifies a Supabase-issued JWT — but Supabase
+    // signs those with *either* a legacy shared HS256 secret *or* (newer
+    // projects, by default) an asymmetric ES256 key published via JWKS,
+    // and a token's own header says which (see auth.rs). So at least one
+    // of these two must be configured, or literally no request could ever
+    // authenticate — that combined check is the fail-fast startup error,
+    // not silently running with every endpoint open. See docs/dashboard.md.
+    let jwt_secret = std::env::var("SUPABASE_JWT_SECRET").ok();
+    let supabase_url = std::env::var("SUPABASE_URL").ok();
+    if jwt_secret.is_none() && supabase_url.is_none() {
+        anyhow::bail!("must set SUPABASE_JWT_SECRET and/or SUPABASE_URL — see docs/dashboard.md");
+    }
 
     let store = Store::connect(&database_url).await?;
     let signer = Keypair::load_or_generate(&PathBuf::from(signing_key_path))?;
     let metrics_handle = harbory_control_plane::metrics::install();
+    let jwks = match &supabase_url {
+        Some(url) => JwkVerifier::fetch(url).await?,
+        None => JwkVerifier::empty(),
+    };
 
     let grpc_store = store.clone();
     let grpc_signer = signer.clone();
@@ -70,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
 
     let online_threshold_seconds =
         (heartbeat_interval_seconds * missed_heartbeat_threshold) as i64;
-    let http_state = AppState { store, online_threshold_seconds, jwt_secret, metrics_handle };
+    let http_state = AppState { store, online_threshold_seconds, jwt_secret, jwks, metrics_handle };
     let http_addr_parsed: std::net::SocketAddr = http_addr.parse()?;
     let http_server = async move {
         tracing::info!(addr = %http_addr, "starting harbory control plane (HTTP)");

@@ -21,9 +21,13 @@ base64 = { workspace = true }
 # Just for displaying proxy_state.applied_hash as a hex string in the
 # GET /agents/{id}/proxy-routes response.
 hex = "0.4"
-# Verifies Supabase-issued (HS256) JWTs on incoming HTTP requests — the
+# Verifies Supabase-issued JWTs (both the legacy shared-secret HS256 form
+# and the newer asymmetric ES256 form) on incoming HTTP requests — the
 # standard, widely-used Rust JWT crate.
 jsonwebtoken = "9"
+# Fetches Supabase's JWKS once at startup (see jwks.rs) — rustls to match
+# sqlx's TLS stack rather than pulling in a second TLS implementation.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Process-global counters/gauges for agent/control-plane health, exposed
 # at GET /metrics in Prometheus text format — the standard combo for
 # instrumenting Rust services.

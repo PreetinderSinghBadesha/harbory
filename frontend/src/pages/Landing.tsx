@@ -5,7 +5,7 @@ import "./Landing.css";
 
 const GITHUB_URL = "https://github.com/PreetinderSinghBadesha/harbory";
 const DOCS_URL = "https://github.com/PreetinderSinghBadesha/harbory/tree/master/docs";
-const INSTALL_COMMAND = `cargo install --git ${GITHUB_URL}.git --bin harbory-agent`;
+const INSTALL_COMMAND = `cargo install --git ${GITHUB_URL}.git harbory-agent`;
 
 function GitHubMark({ size = 16 }: { size?: number }) {
   return (

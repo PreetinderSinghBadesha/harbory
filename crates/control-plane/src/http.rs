@@ -12,6 +12,7 @@ use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
 use crate::auth::AuthenticatedAccount;
+use crate::jwks::JwkVerifier;
 use crate::reconcile::{DesiredContainer, DesiredStatus, ObservedContainer, ObservedStatus, PortMapping};
 use crate::store::Store;
 
@@ -23,7 +24,12 @@ use crate::store::Store;
 pub struct AppState {
     pub store: Store,
     pub online_threshold_seconds: i64,
-    pub jwt_secret: String,
+    /// The legacy shared HS256 secret, if configured — verifies older-style
+    /// Supabase tokens. See `jwt_secret` alongside `jwks` in `auth.rs`.
+    pub jwt_secret: Option<String>,
+    /// Supabase's asymmetric (ES256) signing keys, if a project URL was
+    /// configured — verifies newer-style Supabase tokens. See `auth.rs`.
+    pub jwks: JwkVerifier,
     pub metrics_handle: PrometheusHandle,
 }
 

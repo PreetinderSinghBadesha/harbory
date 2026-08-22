@@ -14,6 +14,7 @@ use chrono::Duration as ChronoDuration;
 use harbory_common::keypair::Keypair;
 use harbory_control_plane::{
     http::{router, AppState},
+    jwks::JwkVerifier,
     store::Store,
 };
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -42,7 +43,13 @@ fn test_app(store: Store) -> axum::Router {
     // fine here: these tests only check the endpoint responds, not that
     // specific counters were recorded.
     let metrics_handle = PrometheusBuilder::new().build_recorder().handle();
-    router(AppState { store, online_threshold_seconds: 30, jwt_secret: TEST_JWT_SECRET.to_string(), metrics_handle })
+    router(AppState {
+        store,
+        online_threshold_seconds: 30,
+        jwt_secret: Some(TEST_JWT_SECRET.to_string()),
+        jwks: JwkVerifier::empty(),
+        metrics_handle,
+    })
 }
 
 fn make_token(sub: Uuid, email: &str) -> String {

@@ -29,18 +29,53 @@ user's own decision, not something decided unilaterally. Concretely:
 ## Required setup (you, not Claude Code — account creation is out of scope for the agent)
 
 1. Create a project at [supabase.com](https://supabase.com/dashboard) (or use an existing one).
-2. **Project Settings -> API**: Project URL, `anon` public key.
-3. **Project Settings -> API -> JWT Settings**: JWT Secret.
+2. **Project Settings -> API**: Project URL, publishable (`anon`) public key.
+3. **Project Settings -> API -> JWT Keys**: see "Two JWT signing schemes" below —
+   this project now handles both, but which one your project actually
+   issues determines which value(s) you need here.
 4. **Project Settings -> Database**: the Postgres connection string.
 5. **Authentication -> Providers**: email is on by default; enable GitHub
    (or whichever OAuth provider(s) you want) here.
-6. Backend: set `DATABASE_URL` (step 4) and `SUPABASE_JWT_SECRET` (step 3)
-   as env vars for `harbory-control-plane` — see `crates/control-plane/src/main.rs`.
-   `SUPABASE_JWT_SECRET` has no fallback; the process refuses to start
-   without it (see "Fail fast" note below).
+6. Backend: set `DATABASE_URL` (step 4) and, per "Two JWT signing schemes"
+   below, `SUPABASE_URL` and/or `SUPABASE_JWT_SECRET`, as env vars for
+   `harbory-control-plane` — see `crates/control-plane/src/main.rs`. At
+   least one of the latter two must be set; the process refuses to start
+   with neither (see "Fail fast" note below).
 7. Frontend: copy `frontend/.env.example` to `frontend/.env` and fill in
    `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` (steps 2) and
-   `VITE_API_URL` (the control plane's HTTP address).
+   `VITE_API_URL` (the control plane's HTTP address). **All three need an
+   explicit `https://` scheme** — `hostname.supabase.co` alone silently
+   becomes a *relative* URL in the browser instead of failing loudly; this
+   has bitten a real deployment already.
+
+## Two JWT signing schemes (found the hard way, in a real deployment)
+
+Supabase has migrated from a single shared HS256 secret to asymmetric
+**JWT Signing Keys** (ES256) as the default for newer/migrated projects.
+Which one your project's *session tokens* (the ones issued on sign-in,
+not the static `anon`/`service_role` API keys) actually use is not
+optional to know — the wrong assumption here produces a persistent,
+confusing `401 Unauthorized` on every authenticated request that has
+nothing to do with a wrong secret value.
+
+To check: decode a real session token's header (`{alg, kid, typ}` —
+either via jwt.io or `echo '<header-segment>' | base64 -d` after
+converting base64url to base64) and look at `alg`.
+
+- **`alg: "ES256"`** (current Supabase default): set `SUPABASE_URL` to
+  the project's URL (`https://<ref>.supabase.co`, same value as the
+  frontend's `VITE_SUPABASE_URL`). The backend fetches
+  `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` once at startup
+  (`crates/control-plane/src/jwks.rs`) and verifies each token's
+  signature against the public key matching its `kid` — the private key
+  never leaves Supabase.
+- **`alg: "HS256"`** (legacy, or a project that hasn't migrated): set
+  `SUPABASE_JWT_SECRET` to the value under **Project Settings -> API ->
+  JWT Keys -> Legacy JWT Secret** (click "Reveal"). Verified against that
+  shared secret directly, no network call.
+- Both can be set at once — a token's own header says which path it
+  needs (`crates/control-plane/src/auth.rs::verify_jwt`), so this is safe
+  for a project that's mid-migration or if you're just not sure.
 
 ## How a request gets authenticated
 
@@ -49,9 +84,10 @@ user's own decision, not something decided unilaterally. Concretely:
 2. `apiFetch` (`frontend/src/lib/api.ts`) attaches that JWT as
    `Authorization: Bearer <token>` on every call to the control plane.
 3. Backend: `AuthenticatedAccount` (`crates/control-plane/src/auth.rs`),
-   an axum extractor, verifies the JWT's HS256 signature against
-   `SUPABASE_JWT_SECRET` and checks `aud == "authenticated"` (Supabase's
-   convention for user-facing tokens) and `exp`.
+   an axum extractor, reads the token's own header to pick HS256 vs.
+   ES256 verification (see above), checks the signature against the
+   matching secret/key either way, and checks `aud == "authenticated"`
+   (Supabase's convention for user-facing tokens) and `exp`.
 4. On success, it calls `Store::get_or_create_account_by_id(sub, email)` —
    idempotent, runs on *every* authenticated request, not just first
    login — which provisions/updates the local `accounts` row for that
@@ -61,10 +97,11 @@ user's own decision, not something decided unilaterally. Concretely:
    rationale as the pairing RPC in `docs/protocol.md`) if the agent
    doesn't exist or belongs to a different account.
 
-**Fail fast:** `SUPABASE_JWT_SECRET` has no insecure default; the control
-plane refuses to start without it, rather than running with every endpoint
-effectively open. Matches the "fail fast rather than silently degrade"
-pattern from Phase 3's Docker connection check.
+**Fail fast:** the control plane refuses to start unless at least one of
+`SUPABASE_JWT_SECRET` / `SUPABASE_URL` is set, rather than running with
+every endpoint effectively unauthenticatable. Matches the "fail fast
+rather than silently degrade" pattern from Phase 3's Docker connection
+check.
 
 ## Deliberate deviation: no hard FK from `accounts.id` to `auth.users.id`
 

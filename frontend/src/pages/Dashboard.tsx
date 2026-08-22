@@ -88,7 +88,7 @@ export function Dashboard() {
             <p>Token (expires {new Date(pairingToken.expires_at).toLocaleString()}), single-use — copy it now:</p>
             <code>{pairingToken.token}</code>
             <p>On the target VM, first time only (needs a Rust toolchain — installs just the agent binary, not this repo):</p>
-            <pre>cargo install --git https://github.com/PreetinderSinghBadesha/harbory.git --bin harbory-agent</pre>
+            <pre>cargo install --git https://github.com/PreetinderSinghBadesha/harbory.git harbory-agent</pre>
             <p>Then run:</p>
             <pre>harbory-agent {pairingToken.token}</pre>
           </div>
