@@ -9,7 +9,11 @@ use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 pub async fn connect(addr: &str) -> Result<Channel, tonic::transport::Error> {
     let mut endpoint = Endpoint::from_shared(addr.to_string())?;
     if addr.starts_with("https://") {
-        endpoint = endpoint.tls_config(ClientTlsConfig::new())?;
+        // `ClientTlsConfig::new()` alone has no trust anchors — enabling
+        // the `tls-webpki-roots` Cargo feature only makes this builder
+        // method available, it doesn't call it. Without this, every real
+        // cert (Let's Encrypt included) fails as `UnknownIssuer`.
+        endpoint = endpoint.tls_config(ClientTlsConfig::new().with_webpki_roots())?;
     }
     endpoint.connect().await
 }
