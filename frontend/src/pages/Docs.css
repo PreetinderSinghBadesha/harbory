@@ -1,0 +1,157 @@
+.docs-section-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+.docs-content {
+  max-width: 760px;
+}
+/* Makes room for the fixed left-hand trail once it's shown (see the
+   matching min-width:1320px query on .docs-trail below) — the trail is
+   viewport-fixed, not part of this flow, so without this the content
+   column would start underneath it. */
+@media (min-width: 1320px) {
+  .docs-content {
+    margin-left: 268px;
+  }
+}
+
+/* Intro character: bobs beside the title, same sprite as the trail guide
+   further down, so it reads as one "guide" character rather than two
+   unrelated decorations. */
+.docs-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+/* Same shift as .docs-content, and for the same reason — the fixed trail
+   is vertically centered in the viewport, so at short viewport heights it
+   can sit level with the hero on initial load (before any scrolling puts
+   distance between them). Keeping both blocks in the same clear column
+   avoids that regardless of viewport height. */
+@media (min-width: 1320px) {
+  .docs-intro {
+    margin-left: 268px;
+  }
+}
+/* `.game-hud .sprite-stage` (GameHud.css) sets its own 72px width/height/
+   margin at 2-class specificity — a bare `.docs-intro-guide` rule loses
+   that fight regardless of source order, so this repeats the `.game-hud`
+   prefix to win outright rather than relying on import order. */
+.game-hud .docs-intro-guide.sprite-stage {
+  width: 84px;
+  height: 84px;
+  margin: 0;
+  flex-shrink: 0;
+  filter: drop-shadow(3px 3px 0 var(--ink));
+}
+
+/* Desktop quest trail: fixed to the left margin, tracks reading progress
+   via IntersectionObserver (see DocsTrail in Docs.tsx). Only shown where
+   there's enough spare width beside the 760px content column to float it
+   without overlapping. */
+.docs-trail {
+  display: none;
+}
+@media (min-width: 1320px) {
+  .docs-trail {
+    display: block;
+    position: fixed;
+    top: 50%;
+    left: 28px;
+    transform: translateY(-50%);
+    z-index: 15;
+    width: 232px;
+    padding: 22px 20px 22px 26px;
+  }
+}
+.docs-trail-line {
+  position: absolute;
+  left: 32px;
+  top: 56px;
+  bottom: 22px;
+  width: 2px;
+  background: var(--line);
+}
+.docs-trail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.docs-trail-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.docs-trail-pip {
+  position: relative;
+  z-index: 1;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  border: 2px solid var(--ink);
+  background: var(--line);
+}
+.docs-trail-item-done .docs-trail-pip {
+  background: linear-gradient(180deg, #7BD99A 0%, var(--hp) 100%);
+}
+.docs-trail-item-active .docs-trail-pip {
+  background: linear-gradient(180deg, #FFE07A 0%, var(--gold) 100%);
+  box-shadow: 0 0 0 3px rgba(245, 183, 0, 0.25);
+}
+.docs-trail-label {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.docs-trail-item:hover .docs-trail-label {
+  color: var(--clay-dark);
+}
+.docs-trail-item-active .docs-trail-label {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* Mobile fallback: no room to float a side panel, so it's a plain sticky
+   horizontal row — still scroll-spy-highlighted, just no character. */
+.docs-trail-mobile {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-bottom: 32px;
+}
+@media (min-width: 1320px) {
+  .docs-trail-mobile {
+    display: none;
+  }
+}
+.docs-toc-link {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 0;
+}
+.docs-toc-link:hover {
+  color: var(--clay-dark);
+}
+.docs-toc-link-active {
+  color: var(--clay-dark);
+}
+
+@media (max-width: 420px) {
+  .docs-section-inner {
+    padding: 0 16px;
+  }
+  .docs-gh-label {
+    display: none;
+  }
+  .game-hud .docs-intro-guide.sprite-stage {
+    width: 56px;
+    height: 56px;
+  }
+}

@@ -5,7 +5,10 @@ import { apiFetch } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "../context/AuthContext";
 import { misuseIcon, spriteFor } from "../lib/agentSprite";
+import { CopyButton } from "../components/CopyButton";
 import "../styles/GameHud.css";
+
+const INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-agent.sh | bash";
 
 interface AgentSummary {
   id: string;
@@ -88,6 +91,7 @@ function PairingTokenCard({ token, issuedAt }: { token: PairingToken; issuedAt: 
   const remainingMs = Math.max(expiresAt - now, 0);
   const progress = Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
   const expired = remainingMs <= 0;
+  const pairCommand = `sudo harbory-agent-pair ${token.token}`;
 
   return (
     <div style={{ flex: 1, minWidth: 300 }}>
@@ -120,8 +124,15 @@ function PairingTokenCard({ token, issuedAt }: { token: PairingToken; issuedAt: 
           {expired ? "EXPIRED" : formatCountdown(remainingMs)}
         </span>
       </div>
-      <div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
-        cargo install --git https://github.com/PreetinderSinghBadesha/harbory.git harbory-agent
+      <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 4, fontWeight: 600 }}>
+        No agent installed on the host yet? <span className="mono">{INSTALL_COMMAND}</span> first, then:
+      </div>
+      <div
+        className="mono"
+        style={{ fontSize: 11, color: "var(--muted)", wordBreak: "break-all", display: "flex", alignItems: "flex-start", gap: 6 }}
+      >
+        <span style={{ flex: 1, minWidth: 0 }}>{pairCommand}</span>
+        <CopyButton text={pairCommand} label="pair command" />
       </div>
     </div>
   );

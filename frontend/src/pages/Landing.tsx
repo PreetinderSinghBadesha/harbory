@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { CopyButton } from "../components/CopyButton";
+import { GitHubMark } from "../components/GitHubMark";
 import greenDrive1 from "../assets/sprites/robot_greenDrive1.png";
 import greenDrive2 from "../assets/sprites/robot_greenDrive2.png";
 import greenBody from "../assets/sprites/robot_greenBody.png";
@@ -9,51 +11,9 @@ import "../styles/GameHud.css";
 import "./Landing.css";
 
 const GITHUB_URL = "https://github.com/PreetinderSinghBadesha/harbory";
-const DOCS_URL = "https://github.com/PreetinderSinghBadesha/harbory/tree/master/docs";
-const INSTALL_COMMAND = `cargo install --git ${GITHUB_URL}.git harbory-agent`;
-
-function GitHubMark({ size = 14 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M12 .5C5.73.5.98 5.24.98 11.52c0 5.02 3.26 9.28 7.77 10.78.57.1.78-.25.78-.55 0-.27-.01-1.16-.02-2.11-3.16.69-3.83-1.34-3.83-1.34-.52-1.31-1.26-1.66-1.26-1.66-1.03-.7.08-.69.08-.69 1.14.08 1.74 1.17 1.74 1.17 1.01 1.74 2.66 1.24 3.31.95.1-.73.4-1.24.72-1.53-2.52-.29-5.17-1.26-5.17-5.61 0-1.24.44-2.25 1.17-3.05-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.13 1.16a10.8 10.8 0 0 1 5.7 0c2.17-1.47 3.13-1.16 3.13-1.16.62 1.57.23 2.73.11 3.02.73.8 1.17 1.81 1.17 3.05 0 4.36-2.66 5.32-5.19 5.6.41.36.77 1.06.77 2.14 0 1.54-.01 2.79-.01 3.17 0 .3.2.66.79.55A10.53 10.53 0 0 0 23.02 11.5C23.02 5.24 18.27.5 12 .5Z" />
-    </svg>
-  );
-}
-
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard access can be denied by the browser; the command is
-      // still visible and selectable, so this is a silent no-op.
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      aria-label={`Copy ${label}`}
-      style={{ flexShrink: 0, display: "inline-flex", background: "none", border: "none", color: "var(--muted)", cursor: "pointer", padding: 2 }}
-    >
-      {copied ? (
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--hp-dark)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M20 6 9 17l-5-5" />
-        </svg>
-      ) : (
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <rect x="8" y="8" width="12" height="12" rx="2" />
-          <path d="M4 16V5a1 1 0 0 1 1-1h11" />
-        </svg>
-      )}
-    </button>
-  );
-}
+const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-agent.sh";
+const INSTALL_COMMAND = `curl -fsSL ${INSTALL_SCRIPT_URL} | bash`;
+const PAIR_COMMAND = "sudo harbory-agent-pair <pairing-token>";
 
 function Reveal({
   children,
@@ -111,7 +71,7 @@ export function Landing() {
             <a href="#why" style={{ fontSize: 14, fontWeight: 600, color: "var(--muted)" }}>Why Harbory</a>
             <a href="#architecture" style={{ fontSize: 14, fontWeight: 600, color: "var(--muted)" }}>Architecture</a>
             <a href="#features" style={{ fontSize: 14, fontWeight: 600, color: "var(--muted)" }}>Features</a>
-            <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" style={{ fontSize: 14, fontWeight: 600, color: "var(--muted)" }}>Docs</a>
+            <Link to="/docs" style={{ fontSize: 14, fontWeight: 600, color: "var(--muted)" }}>Docs</Link>
           </nav>
           <div className="landing-nav-actions" style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className="pixel-btn pixel-btn-ghost pixel-btn-sm">
@@ -201,8 +161,9 @@ export function Landing() {
               <div className="pixel" style={{ color: "var(--muted)", fontSize: 11, marginBottom: 14 }}>03</div>
               <h3 style={{ fontSize: 16.5, fontWeight: 800, margin: "0 0 10px" }}>Pair, don&apos;t provision</h3>
               <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--muted)", margin: 0 }}>
-                A short-lived pairing token and one <span className="mono">cargo install</span> get an agent talking
-                to the control plane — no cluster bootstrap, no control-node quorum.
+                One command sets up docker group and nginx permissions automatically; a short-lived pairing token
+                from the dashboard is all a second command needs to get the agent talking to the control plane —
+                no cluster bootstrap, no control-node quorum.
               </p>
             </div>
           </div>
@@ -357,8 +318,8 @@ export function Landing() {
               </div>
               <div className="pixel-panel-sm" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", background: "#FFF9EE", textAlign: "left" }}>
                 <span className="pixel" style={{ color: "var(--clay-dark)", fontSize: 9 }}>2</span>
-                <code className="mono" style={{ flex: 1, minWidth: 0, fontSize: 12 }}>harbory-agent &lt;pairing-token&gt;</code>
-                <CopyButton text="harbory-agent <pairing-token>" label="run command" />
+                <code className="mono" style={{ flex: 1, minWidth: 0, fontSize: 12 }}>{PAIR_COMMAND}</code>
+                <CopyButton text={PAIR_COMMAND} label="pair command" />
               </div>
             </div>
             <Link to="/dashboard" className="pixel-btn">OPEN DASHBOARD TO GENERATE A TOKEN</Link>
@@ -381,7 +342,7 @@ export function Landing() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 22 }}>
             <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>GitHub</a>
-            <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>Docs</a>
+            <Link to="/docs" style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>Docs</Link>
             <Link to="/dashboard" style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>Dashboard</Link>
           </div>
         </div>
