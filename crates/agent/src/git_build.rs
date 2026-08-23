@@ -64,6 +64,7 @@ pub async fn build(docker: &Docker, logical_name: &str, source: &GitSource) -> R
         remote,
         rm: true,
         forcerm: true,
+        version: bollard::image::BuilderVersion::BuilderBuildKit,
         ..Default::default()
     };
 
