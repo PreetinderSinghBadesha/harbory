@@ -49,6 +49,10 @@ fn test_app(store: Store) -> axum::Router {
         jwt_secret: Some(TEST_JWT_SECRET.to_string()),
         jwks: JwkVerifier::empty(),
         metrics_handle,
+        github_client_id: None,
+        github_client_secret: None,
+        github_redirect_uri: None,
+        frontend_url: None,
     })
 }
 

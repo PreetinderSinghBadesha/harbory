@@ -2,12 +2,14 @@ mod accounts;
 mod agents;
 mod audit;
 mod containers;
+mod github;
 mod pairing;
 mod proxy;
 mod registration;
 
 pub use agents::AgentRecord;
 pub use audit::{AuditEventRecord, AuditEventType};
+pub use github::{ConsumeStateError, GitHubConnectionRecord, IssuedOAuthState};
 pub use pairing::IssuedPairingToken;
 pub use registration::{RegisterError, RegisterOutcome, VerifyCredentialError};
 

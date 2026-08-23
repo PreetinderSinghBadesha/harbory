@@ -1,7 +1,8 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post, put},
+    response::Redirect,
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -12,9 +13,10 @@ use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
 use crate::auth::AuthenticatedAccount;
+use crate::github;
 use crate::jwks::JwkVerifier;
 use crate::reconcile::{DesiredContainer, DesiredStatus, ObservedContainer, ObservedStatus, PortMapping};
-use crate::store::Store;
+use crate::store::{AuditEventType, Store};
 
 /// JSON API behind the dashboard — every route requires a valid Supabase
 /// JWT (`AuthenticatedAccount`, see auth.rs) and, for anything scoped to a
@@ -31,6 +33,16 @@ pub struct AppState {
     /// configured — verifies newer-style Supabase tokens. See `auth.rs`.
     pub jwks: JwkVerifier,
     pub metrics_handle: PrometheusHandle,
+    /// GitHub OAuth App credentials + where to send the browser back to
+    /// after the OAuth round trip — all `None`/absent when the GitHub
+    /// integration isn't configured, which every handler that needs them
+    /// treats as "not available" (503) rather than the control plane
+    /// refusing to start, since this is an optional feature unlike the
+    /// fail-fast Supabase JWT check.
+    pub github_client_id: Option<String>,
+    pub github_client_secret: Option<String>,
+    pub github_redirect_uri: Option<String>,
+    pub frontend_url: Option<String>,
 }
 
 /// Confirms `agent_id` exists *and* belongs to `account` in one check —
@@ -70,6 +82,14 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/:agent_id/containers/:name", put(put_container).delete(delete_container))
         .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
         .route("/agents/:agent_id/proxy-routes/:name", put(put_proxy_route).delete(delete_proxy_route))
+        .route("/github/oauth/start", post(github_oauth_start))
+        // Deliberately unauthenticated, like /metrics above: this is hit
+        // by a real browser redirect from github.com, which can't carry
+        // our normal Authorization header — see github_oauth_callback's
+        // doc comment for how it recovers which account this is for.
+        .route("/github/oauth/callback", get(github_oauth_callback))
+        .route("/github/repos", get(list_github_repos))
+        .route("/github/connection", delete(delete_github_connection))
         // Bearer-token auth (not cookies), so a permissive CORS policy
         // doesn't carry the usual credentialed-CORS/CSRF risk — a
         // cross-origin page can't make the browser attach a token it
@@ -480,4 +500,172 @@ async fn list_proxy_routes(
         applied_hash: applied.as_ref().map(|(hash, _)| hex::encode(hash)),
         error: applied.and_then(|(_, error)| error),
     }))
+}
+
+// --- GitHub OAuth App integration -----------------------------------------
+//
+// v1 scope: connect a GitHub account and list its repos. Deploying a
+// container *from* one of those repos is a separate, later piece of work
+// — this alone is already independently useful/testable end to end.
+
+fn github_configured(state: &AppState) -> Option<(&str, &str, &str)> {
+    Some((state.github_client_id.as_deref()?, state.github_client_secret.as_deref()?, state.github_redirect_uri.as_deref()?))
+}
+
+#[derive(Serialize)]
+struct OAuthStartDto {
+    authorize_url: String,
+}
+
+const GITHUB_OAUTH_STATE_TTL_MINUTES: i64 = 10;
+
+/// Step one of the OAuth Authorization Code flow. Returns a URL for the
+/// frontend to navigate the browser to directly (`window.location.href =
+/// ...`, not a fetch) — GitHub's own redirect back to
+/// `github_oauth_callback` is what completes the round trip.
+async fn github_oauth_start(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+) -> Result<Json<OAuthStartDto>, StatusCode> {
+    let Some((client_id, _secret, redirect_uri)) = github_configured(&state) else {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+
+    let issued = state
+        .store
+        .issue_github_oauth_state(account.id, Duration::minutes(GITHUB_OAUTH_STATE_TTL_MINUTES))
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "failed to issue github oauth state");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(OAuthStartDto { authorize_url: github::oauth_authorize_url(client_id, redirect_uri, &issued.plaintext) }))
+}
+
+#[derive(Deserialize)]
+struct GitHubCallbackParams {
+    code: Option<String>,
+    state: Option<String>,
+    /// Set instead of `code` if the user declined on GitHub's consent
+    /// screen — not an error worth logging, just "they said no".
+    error: Option<String>,
+}
+
+/// Step two: GitHub redirects the browser here directly, so this can't
+/// require the normal `Authorization` header the rest of the API uses —
+/// `state` (looked up via `consume_github_oauth_state`, the same
+/// row-locked single-use pattern `register_agent` uses for pairing
+/// tokens) is what recovers which account started the flow. Always
+/// redirects back into the dashboard rather than rendering a raw error
+/// to the browser, since a person is looking at this, not a script.
+async fn github_oauth_callback(State(state): State<AppState>, Query(params): Query<GitHubCallbackParams>) -> Result<Redirect, StatusCode> {
+    let Some(frontend_url) = state.frontend_url.as_deref() else {
+        // Nowhere to send them back to — this is a real misconfiguration,
+        // not a normal failure mode, so it's the one case that doesn't
+        // redirect.
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let error_redirect = Ok(Redirect::to(&format!("{frontend_url}/dashboard?github=error")));
+
+    if params.error.is_some() {
+        return error_redirect;
+    }
+    let (Some(code), Some(state_param)) = (params.code, params.state) else {
+        return error_redirect;
+    };
+    let Some((client_id, client_secret, redirect_uri)) = github_configured(&state) else {
+        return error_redirect;
+    };
+
+    let account_id = match state.store.consume_github_oauth_state(&state_param).await {
+        Ok(id) => id,
+        Err(err) => {
+            tracing::warn!(?err, "github oauth callback with invalid/expired/reused state");
+            return error_redirect;
+        }
+    };
+
+    let access_token = match github::exchange_code(client_id, client_secret, &code, redirect_uri).await {
+        Ok(token) => token,
+        Err(err) => {
+            tracing::error!(?err, "github code exchange failed");
+            return error_redirect;
+        }
+    };
+    let github_login = match github::fetch_login(&access_token).await {
+        Ok(login) => login,
+        Err(err) => {
+            tracing::error!(?err, "failed to fetch github user after successful code exchange");
+            return error_redirect;
+        }
+    };
+
+    if let Err(err) = state.store.upsert_github_connection(account_id, &access_token, &github_login).await {
+        tracing::error!(?err, "failed to store github connection");
+        return error_redirect;
+    }
+    let _ = state
+        .store
+        .record_audit_event(AuditEventType::GitHubConnected, Some(account_id), None, serde_json::json!({ "github_login": github_login }))
+        .await;
+
+    Ok(Redirect::to(&format!("{frontend_url}/dashboard?github=connected")))
+}
+
+#[derive(Serialize)]
+struct GitHubRepoDto {
+    full_name: String,
+    private: bool,
+    default_branch: String,
+    html_url: String,
+}
+
+#[derive(Serialize)]
+struct GitHubReposDto {
+    github_login: String,
+    repos: Vec<GitHubRepoDto>,
+}
+
+/// 404 doubles as "not connected yet" — same don't-invent-a-new-shape
+/// convention as everywhere else `require_owned_agent` uses 404 for "not
+/// yours/doesn't exist".
+async fn list_github_repos(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+) -> Result<Json<GitHubReposDto>, StatusCode> {
+    let connection = state.store.get_github_connection(account.id).await.map_err(|err| {
+        tracing::error!(?err, "failed to load github connection");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let Some(connection) = connection else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+
+    let repos = github::list_repos(&connection.access_token).await.map_err(|err| {
+        tracing::error!(?err, "failed to list github repos");
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    Ok(Json(GitHubReposDto {
+        github_login: connection.github_login,
+        repos: repos
+            .into_iter()
+            .map(|r| GitHubRepoDto { full_name: r.full_name, private: r.private, default_branch: r.default_branch, html_url: r.html_url })
+            .collect(),
+    }))
+}
+
+async fn delete_github_connection(State(state): State<AppState>, account: AuthenticatedAccount) -> Result<StatusCode, StatusCode> {
+    let deleted = state.store.delete_github_connection(account.id).await.map_err(|err| {
+        tracing::error!(?err, "failed to delete github connection");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if deleted {
+        let _ = state.store.record_audit_event(AuditEventType::GitHubDisconnected, Some(account.id), None, serde_json::json!({})).await;
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }

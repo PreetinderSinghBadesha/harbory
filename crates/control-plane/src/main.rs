@@ -48,6 +48,14 @@ async fn main() -> anyhow::Result<()> {
     if jwt_secret.is_none() && supabase_url.is_none() {
         anyhow::bail!("must set SUPABASE_JWT_SECRET and/or SUPABASE_URL — see docs/dashboard.md");
     }
+    // GitHub OAuth App integration — optional, unlike the Supabase check
+    // above: a control plane with none of these set still runs fine,
+    // just with /github/* routes returning 503 (see github_configured in
+    // http.rs) rather than the whole process refusing to start.
+    let github_client_id = std::env::var("GITHUB_CLIENT_ID").ok();
+    let github_client_secret = std::env::var("GITHUB_CLIENT_SECRET").ok();
+    let github_redirect_uri = std::env::var("GITHUB_REDIRECT_URI").ok();
+    let frontend_url = std::env::var("FRONTEND_URL").ok();
 
     let store = Store::connect(&database_url).await?;
     let signer = Keypair::load_or_generate(&PathBuf::from(signing_key_path))?;
@@ -81,7 +89,17 @@ async fn main() -> anyhow::Result<()> {
 
     let online_threshold_seconds =
         (heartbeat_interval_seconds * missed_heartbeat_threshold) as i64;
-    let http_state = AppState { store, online_threshold_seconds, jwt_secret, jwks, metrics_handle };
+    let http_state = AppState {
+        store,
+        online_threshold_seconds,
+        jwt_secret,
+        jwks,
+        metrics_handle,
+        github_client_id,
+        github_client_secret,
+        github_redirect_uri,
+        frontend_url,
+    };
     let http_addr_parsed: std::net::SocketAddr = http_addr.parse()?;
     let http_server = async move {
         tracing::info!(addr = %http_addr, "starting harbory control plane (HTTP)");
