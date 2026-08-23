@@ -49,14 +49,48 @@ fn tag_for(logical_name: &str) -> String {
 pub async fn build(_docker: &Docker, logical_name: &str, source: &GitSource) -> Result<String, BuildError> {
     let tag = tag_for(logical_name);
     let dockerfile = if source.dockerfile_path.is_empty() { "Dockerfile" } else { source.dockerfile_path.as_str() };
+    
     let remote = if source.git_ref.is_empty() {
         source.repo_url.clone()
     } else {
-        format!("{}#{}", source.repo_url, source.git_ref)
+        source.repo_url.clone() // Clone the repo URL, checkout the ref later
     };
 
+    let temp_dir = tempfile::tempdir().map_err(|e| BuildError::Build(format!("Failed to create temp dir: {}", e)))?;
+    let repo_dir = temp_dir.path().join("repo");
+
+    // 1. Git clone
+    let mut clone_cmd = tokio::process::Command::new("git");
+    clone_cmd.arg("clone").arg("--recurse-submodules").arg(&remote).arg(&repo_dir);
+    
+    // Prevent git from asking for interactive credentials
+    clone_cmd.env("GIT_TERMINAL_PROMPT", "0");
+    
+    let clone_output = clone_cmd.output().await.map_err(|e| BuildError::Build(format!("Failed to execute git clone: {}", e)))?;
+    if !clone_output.status.success() {
+        let stderr = String::from_utf8_lossy(&clone_output.stderr);
+        return Err(BuildError::Build(format!("Git clone failed:\n{}", stderr)));
+    }
+
+    // 2. Git checkout ref (if specified)
+    if !source.git_ref.is_empty() {
+        let checkout_output = tokio::process::Command::new("git")
+            .current_dir(&repo_dir)
+            .args(["checkout", &source.git_ref])
+            .output()
+            .await
+            .map_err(|e| BuildError::Build(format!("Failed to execute git checkout: {}", e)))?;
+            
+        if !checkout_output.status.success() {
+            let stderr = String::from_utf8_lossy(&checkout_output.stderr);
+            return Err(BuildError::Build(format!("Git checkout failed:\n{}", stderr)));
+        }
+    }
+
+    // 3. Docker build
     let output = tokio::process::Command::new("docker")
-        .args(["build", "-t", &tag, "-f", dockerfile, &remote])
+        .current_dir(&repo_dir)
+        .args(["build", "-t", &tag, "-f", dockerfile, "."])
         .env("DOCKER_BUILDKIT", "1")
         .output()
         .await
