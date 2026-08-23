@@ -607,6 +607,14 @@ export function AgentDetail() {
           </div>
         </section>
       </main>
+
+      {logsModal && agentId && (
+        <LogsModal
+          agentId={agentId}
+          containerName={logsModal.containerName}
+          onClose={() => setLogsModal(null)}
+        />
+      )}
     </div>
   );
 }
