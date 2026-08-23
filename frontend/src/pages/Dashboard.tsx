@@ -5,6 +5,7 @@ import { apiFetch } from "../lib/api";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "../context/AuthContext";
 import { misuseIcon, situationFor, spriteFor } from "../lib/agentSprite";
+import { fetchGitHubConnection } from "../lib/github";
 import { CopyButton } from "../components/CopyButton";
 import "../styles/GameHud.css";
 
@@ -40,31 +41,6 @@ const EVENT_LABELS: Record<string, string> = {
   github_disconnected: "GitHub account disconnected",
 };
 
-interface GitHubRepo {
-  full_name: string;
-  private: boolean;
-  default_branch: string;
-  html_url: string;
-}
-
-interface GitHubReposResponse {
-  github_login: string;
-  repos: GitHubRepo[];
-}
-
-/** 404 means "no GitHub account connected yet" — a real state, not an
- * error, so it's translated to `null` here rather than left to reject the
- * query and get treated the same as an actual failure. */
-async function fetchGitHubConnection(): Promise<GitHubReposResponse | null> {
-  try {
-    return await apiFetch<GitHubReposResponse>("/github/repos");
-  } catch (err) {
-    if (err instanceof Error && /\s404\s/.test(err.message)) {
-      return null;
-    }
-    throw err;
-  }
-}
 
 function AgentSprite({ agent }: { agent: AgentSummary }) {
   const sprite = spriteFor(agent.id);

@@ -130,6 +130,7 @@ async fn store_roundtrips_desired_and_observed_containers() {
         ports: vec![PortMapping { host_port: 8080, container_port: 80 }],
         command: vec![],
         status: DesiredStatus::Running,
+        git_source: None,
     };
     store.upsert_desired_container(agent_id, &desired).await.unwrap();
 
@@ -160,6 +161,7 @@ async fn missing_desired_container_triggers_deploy_command() {
                 ports: vec![],
                 command: vec![],
                 status: DesiredStatus::Running,
+                git_source: None,
             },
         )
         .await
@@ -200,6 +202,7 @@ async fn converged_state_produces_no_command() {
                 ports: vec![],
                 command: vec![],
                 status: DesiredStatus::Running,
+                git_source: None,
             },
         )
         .await
@@ -239,6 +242,7 @@ async fn desired_absent_but_observed_running_triggers_remove_command() {
                 ports: vec![],
                 command: vec![],
                 status: DesiredStatus::Running,
+                git_source: None,
             },
         )
         .await

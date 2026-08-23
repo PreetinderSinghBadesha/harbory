@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::auth::AuthenticatedAccount;
 use crate::github;
 use crate::jwks::JwkVerifier;
-use crate::reconcile::{DesiredContainer, DesiredStatus, ObservedContainer, ObservedStatus, PortMapping};
+use crate::reconcile::{DesiredContainer, DesiredStatus, GitSource, ObservedContainer, ObservedStatus, PortMapping};
 use crate::store::{AuditEventType, Store};
 
 /// JSON API behind the dashboard — every route requires a valid Supabase
@@ -251,7 +251,18 @@ struct PortMappingDto {
 }
 
 #[derive(Deserialize)]
+struct GitSourceDto {
+    repo_url: String,
+    #[serde(default)]
+    git_ref: String,
+    #[serde(default)]
+    dockerfile_path: String,
+}
+
+#[derive(Deserialize)]
 struct PutContainerRequest {
+    /// Required unless `source` is given — mutually exclusive with it.
+    #[serde(default)]
     image: String,
     #[serde(default)]
     env: Vec<String>,
@@ -259,6 +270,8 @@ struct PutContainerRequest {
     ports: Vec<PortMappingDto>,
     #[serde(default)]
     command: Vec<String>,
+    #[serde(default)]
+    source: Option<GitSourceDto>,
 }
 
 /// Declares desired state for one container (create it if new, update it
@@ -274,13 +287,28 @@ async fn put_container(
 ) -> Result<StatusCode, StatusCode> {
     require_owned_agent(&state, &account, agent_id).await?;
 
+    // `image` is a real pull reference for a plain deploy, or — when
+    // `source` is given — computed here as the synthetic
+    // "git+<repo>#<ref>" identity string `reconcile::diff` uses to decide
+    // whether to redeploy. Never both; a request needs exactly one.
+    let (image, git_source) = match req.source {
+        Some(src) if !src.repo_url.is_empty() => {
+            let image = format!("git+{}#{}", src.repo_url, src.git_ref);
+            (image, Some(GitSource { repo_url: src.repo_url, git_ref: src.git_ref, dockerfile_path: src.dockerfile_path }))
+        }
+        Some(_) => return Err(StatusCode::BAD_REQUEST),
+        None if !req.image.is_empty() => (req.image, None),
+        None => return Err(StatusCode::BAD_REQUEST),
+    };
+
     let container = DesiredContainer {
         name,
-        image: req.image,
+        image,
         env: req.env,
         ports: req.ports.into_iter().map(|p| PortMapping { host_port: p.host_port, container_port: p.container_port }).collect(),
         command: req.command,
         status: DesiredStatus::Running,
+        git_source,
     };
 
     state.store.upsert_desired_container(agent_id, &container).await.map_err(|err| {
@@ -313,6 +341,13 @@ async fn delete_container(
 }
 
 #[derive(Serialize)]
+struct GitSourceOutDto {
+    repo_url: String,
+    git_ref: String,
+    dockerfile_path: String,
+}
+
+#[derive(Serialize)]
 struct DesiredContainerDto {
     name: String,
     image: String,
@@ -320,6 +355,7 @@ struct DesiredContainerDto {
     ports: Vec<PortMappingDto2>,
     command: Vec<String>,
     status: &'static str,
+    source: Option<GitSourceOutDto>,
 }
 
 #[derive(Serialize)]
@@ -370,6 +406,7 @@ async fn list_containers(
                     DesiredStatus::Running => "running",
                     DesiredStatus::Absent => "absent",
                 },
+                source: d.git_source.map(|g| GitSourceOutDto { repo_url: g.repo_url, git_ref: g.git_ref, dockerfile_path: g.dockerfile_path }),
             })
             .collect(),
         observed: observed

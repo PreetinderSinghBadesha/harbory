@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
 import { situationFor, spriteFor } from "../lib/agentSprite";
+import { fetchGitHubConnection, repoUrlFor } from "../lib/github";
 import "../styles/GameHud.css";
 
 interface AgentSummary {
@@ -16,6 +17,7 @@ interface DesiredContainer {
   name: string;
   image: string;
   status: string;
+  source: { repo_url: string; git_ref: string; dockerfile_path: string } | null;
 }
 interface ObservedContainer {
   name: string;
@@ -82,17 +84,34 @@ export function AgentDetail() {
   });
 
   const [containerName, setContainerName] = useState("");
+  const [deploySource, setDeploySource] = useState<"image" | "github">("image");
   const [image, setImage] = useState("");
+  const [selectedRepo, setSelectedRepo] = useState("");
+  const [gitRef, setGitRef] = useState("");
+  const [dockerfilePath, setDockerfilePath] = useState("");
+
+  const github = useQuery({
+    queryKey: ["github-connection"],
+    queryFn: fetchGitHubConnection,
+  });
+
   const deployContainer = useMutation({
     mutationFn: () =>
       apiFetch<void>(`/agents/${agentId}/containers/${containerName}`, {
         method: "PUT",
-        body: JSON.stringify({ image }),
+        body: JSON.stringify(
+          deploySource === "github"
+            ? { source: { repo_url: repoUrlFor(selectedRepo), git_ref: gitRef, dockerfile_path: dockerfilePath } }
+            : { image },
+        ),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["containers", agentId] });
       setContainerName("");
       setImage("");
+      setSelectedRepo("");
+      setGitRef("");
+      setDockerfilePath("");
     },
   });
   const removeContainer = useMutation({
@@ -249,7 +268,19 @@ export function AgentDetail() {
                         return (
                           <tr key={d.name}>
                             <td>{d.name}</td>
-                            <td>{d.image}</td>
+                            <td>
+                              {d.source ? (
+                                <>
+                                  <span className="badge" style={{ background: "#E9F4FF", color: "var(--blue)", borderColor: "var(--blue)", marginRight: 6 }}>
+                                    GITHUB
+                                  </span>
+                                  {d.source.repo_url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "")}
+                                  {d.source.git_ref && `@${d.source.git_ref}`}
+                                </>
+                              ) : (
+                                d.image
+                              )}
+                            </td>
                             <td>
                               <span className="badge" style={{ background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }}>
                                 {d.status.toUpperCase()}
@@ -279,15 +310,65 @@ export function AgentDetail() {
                     </tbody>
                   </table>
                 )}
+                <div style={{ display: "flex", gap: 8, marginTop: 14, marginBottom: 10 }}>
+                  <button
+                    type="button"
+                    className={deploySource === "image" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                    onClick={() => setDeploySource("image")}
+                  >
+                    IMAGE
+                  </button>
+                  <button
+                    type="button"
+                    className={deploySource === "github" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                    onClick={() => setDeploySource("github")}
+                  >
+                    FROM GITHUB REPO
+                  </button>
+                </div>
                 <form onSubmit={handleDeployContainer} className="inline-form">
                   <input placeholder="name" value={containerName} onChange={(e) => setContainerName(e.target.value)} required />
-                  <input
-                    placeholder="image (e.g. nginx:alpine)"
-                    value={image}
-                    onChange={(e) => setImage(e.target.value)}
-                    required
-                  />
-                  <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployContainer.isPending}>
+                  {deploySource === "image" ? (
+                    <input
+                      placeholder="image (e.g. nginx:alpine)"
+                      value={image}
+                      onChange={(e) => setImage(e.target.value)}
+                      required
+                    />
+                  ) : github.data && github.data.repos.length > 0 ? (
+                    <>
+                      <select value={selectedRepo} onChange={(e) => setSelectedRepo(e.target.value)} required>
+                        <option value="" disabled>
+                          select a repo…
+                        </option>
+                        {github.data.repos.map((r) => (
+                          <option key={r.full_name} value={r.full_name}>
+                            {r.full_name}
+                            {r.private ? " (private)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        placeholder="branch (default: repo's default branch)"
+                        value={gitRef}
+                        onChange={(e) => setGitRef(e.target.value)}
+                      />
+                      <input
+                        placeholder="Dockerfile path (default: Dockerfile)"
+                        value={dockerfilePath}
+                        onChange={(e) => setDockerfilePath(e.target.value)}
+                      />
+                    </>
+                  ) : (
+                    <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
+                      {github.isLoading ? "Loading repos…" : "Connect a GitHub account from the dashboard first."}
+                    </p>
+                  )}
+                  <button
+                    type="submit"
+                    className="pixel-btn pixel-btn-sm"
+                    disabled={deployContainer.isPending || (deploySource === "github" && !github.data?.repos.length)}
+                  >
                     DEPLOY
                   </button>
                 </form>

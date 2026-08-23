@@ -16,14 +16,30 @@ pub enum DesiredStatus {
     Absent,
 }
 
+/// Plain repo/ref/dockerfile-path, no embedded credential — that's added
+/// (only for private repos, only in the wire message) at dispatch time in
+/// `stream.rs`, never persisted. See `image` below for how this interacts
+/// with reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitSource {
+    pub repo_url: String,
+    pub git_ref: String,
+    pub dockerfile_path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredContainer {
     pub name: String,
+    /// A real pullable reference, or — when `git_source` is set — the
+    /// synthetic "git+<repo_url>#<git_ref>" identity string `diff` uses to
+    /// decide convergence (computed once, in `http.rs`'s `put_container`,
+    /// not here — this module stays DB/protocol-agnostic).
     pub image: String,
     pub env: Vec<String>,
     pub ports: Vec<PortMapping>,
     pub command: Vec<String>,
     pub status: DesiredStatus,
+    pub git_source: Option<GitSource>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +116,7 @@ mod tests {
             ports: vec![],
             command: vec![],
             status: DesiredStatus::Running,
+            git_source: None,
         }
     }
 

@@ -7,8 +7,8 @@ use harbory_protocol::{
     v1::{
         agent_message::Payload as AgentPayload, agent_stream_service_server::AgentStreamService,
         container_command::Action as ContainerAction, control_plane_message::Payload as ControlPlanePayload,
-        AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, Heartbeat as HeartbeatMsg,
-        HeartbeatAck, PortMapping as ProtoPortMapping, ProxyConfig, Welcome,
+        AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, GitSource as ProtoGitSource,
+        Heartbeat as HeartbeatMsg, HeartbeatAck, PortMapping as ProtoPortMapping, ProxyConfig, Welcome,
     },
 };
 use rand::RngCore;
@@ -54,26 +54,64 @@ fn observed_from_proto(state: harbory_protocol::v1::ContainerState) -> ObservedC
     ObservedContainer { name: state.name, image: state.image, status }
 }
 
-fn action_to_command(action: Action) -> ContainerCommand {
+/// Embeds the account's GitHub credential into the repo URL for this one
+/// wire message only — `desired_containers` (and the `GitSource` passed
+/// in here) always holds the plain URL; nothing credential-bearing is
+/// ever persisted. Falls back to a plain (unauthenticated) clone URL if
+/// the account never connected GitHub, which works fine for a public
+/// repo and fails with a clear error from Docker for a private one.
+async fn resolve_git_source(store: &Store, agent_id: uuid::Uuid, source: reconcile::GitSource) -> ProtoGitSource {
+    let account_id = match store.get_agent(agent_id).await {
+        Ok(Some(agent)) => Some(agent.account_id),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(%agent_id, ?err, "failed to look up agent's account for github credential embedding");
+            None
+        }
+    };
+    let connection = match account_id {
+        Some(id) => store.get_github_connection(id).await.ok().flatten(),
+        None => None,
+    };
+
+    let repo_url = match connection {
+        Some(conn) => embed_credential(&source.repo_url, &conn.access_token),
+        None => source.repo_url,
+    };
+    ProtoGitSource { repo_url, git_ref: source.git_ref, dockerfile_path: source.dockerfile_path }
+}
+
+fn embed_credential(repo_url: &str, token: &str) -> String {
+    match repo_url.strip_prefix("https://") {
+        Some(rest) => format!("https://x-access-token:{token}@{rest}"),
+        // Not an https URL this knows how to credential — leave it as-is
+        // rather than guessing at a format.
+        None => repo_url.to_string(),
+    }
+}
+
+async fn action_to_command(store: &Store, agent_id: uuid::Uuid, action: Action) -> ContainerCommand {
     match action {
-        Action::Deploy(d) => ContainerCommand {
-            action: Some(ContainerAction::Deploy(harbory_protocol::v1::ContainerSpec {
-                name: d.name,
-                image: d.image,
-                env: d.env,
-                ports: d
-                    .ports
-                    .into_iter()
-                    .map(|p| ProtoPortMapping { host_port: p.host_port as u32, container_port: p.container_port as u32 })
-                    .collect(),
-                command: d.command,
-                // Deploying from a git repo isn't wired up on the
-                // control-plane side yet (Phase 2 is agent-build-capability
-                // only, tested in isolation) — DesiredContainer has no
-                // git-source field to plumb through here yet.
-                git_source: None,
-            })),
-        },
+        Action::Deploy(d) => {
+            let git_source = match d.git_source {
+                Some(source) => Some(resolve_git_source(store, agent_id, source).await),
+                None => None,
+            };
+            ContainerCommand {
+                action: Some(ContainerAction::Deploy(harbory_protocol::v1::ContainerSpec {
+                    name: d.name,
+                    image: d.image,
+                    env: d.env,
+                    ports: d
+                        .ports
+                        .into_iter()
+                        .map(|p| ProtoPortMapping { host_port: p.host_port as u32, container_port: p.container_port as u32 })
+                        .collect(),
+                    command: d.command,
+                    git_source,
+                })),
+            }
+        }
         Action::Remove(name) => ContainerCommand { action: Some(ContainerAction::Remove(name)) },
     }
 }
@@ -105,7 +143,7 @@ async fn reconcile_and_dispatch(
             Action::Deploy(_) => "deploy",
             Action::Remove(_) => "remove",
         };
-        let command = action_to_command(action);
+        let command = action_to_command(store, agent_id, action).await;
         if tx.send(frame(ControlPlanePayload::Command(command))).await.is_err() {
             return false;
         }
