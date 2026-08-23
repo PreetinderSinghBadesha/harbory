@@ -85,11 +85,17 @@ struct ObservedRow {
     name: String,
     image: String,
     status: String,
+    error: Option<String>,
 }
 
 impl ObservedRow {
     fn into_domain(self) -> ObservedContainer {
-        ObservedContainer { name: self.name, image: self.image, status: parse_observed_status(&self.status) }
+        ObservedContainer {
+            name: self.name,
+            image: self.image,
+            status: parse_observed_status(&self.status),
+            error: self.error,
+        }
     }
 }
 
@@ -153,6 +159,25 @@ impl Store {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Deletes absent container declarations that are no longer present in
+    /// observed state (or already observed as removed), meaning removal has
+    /// converged.
+    pub async fn cleanup_converged_absent_containers(&self, agent_id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "DELETE FROM desired_containers
+             WHERE agent_id = $1
+               AND desired_status = 'absent'
+               AND name NOT IN (
+                   SELECT name FROM observed_containers
+                   WHERE agent_id = $1 AND status != 'removed'
+               )",
+        )
+        .bind(agent_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn get_desired_containers(&self, agent_id: Uuid) -> Result<Vec<DesiredContainer>, sqlx::Error> {
         let rows = sqlx::query_as::<_, DesiredRow>(
             "SELECT name, image, env, port_mappings, command, desired_status,
@@ -182,13 +207,14 @@ impl Store {
 
         for c in containers {
             sqlx::query(
-                "INSERT INTO observed_containers (agent_id, name, image, status, reported_at)
-                 VALUES ($1, $2, $3, $4, now())",
+                "INSERT INTO observed_containers (agent_id, name, image, status, error, reported_at)
+                 VALUES ($1, $2, $3, $4, $5, now())",
             )
             .bind(agent_id)
             .bind(&c.name)
             .bind(&c.image)
             .bind(observed_status_str(c.status))
+            .bind(&c.error)
             .execute(&mut *tx)
             .await?;
         }
@@ -198,7 +224,7 @@ impl Store {
 
     pub async fn get_observed_containers(&self, agent_id: Uuid) -> Result<Vec<ObservedContainer>, sqlx::Error> {
         let rows = sqlx::query_as::<_, ObservedRow>(
-            "SELECT name, image, status FROM observed_containers WHERE agent_id = $1 ORDER BY name",
+            "SELECT name, image, status, error FROM observed_containers WHERE agent_id = $1 ORDER BY name",
         )
         .bind(agent_id)
         .fetch_all(&self.pool)

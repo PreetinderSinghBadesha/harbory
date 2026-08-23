@@ -227,15 +227,34 @@ impl ContainerManager {
         };
         let mut stream = self.docker.logs(&name, Some(options));
         let mut out = String::new();
-        while let Some(chunk) = stream.next().await {
-            match chunk? {
-                LogOutput::StdOut { message } | LogOutput::StdErr { message } => {
-                    out.push_str(&String::from_utf8_lossy(&message));
+        let mut had_chunks = false;
+        while let Some(chunk_res) = stream.next().await {
+            match chunk_res {
+                Ok(chunk) => {
+                    had_chunks = true;
+                    match chunk {
+                        LogOutput::StdOut { message } | LogOutput::StdErr { message } => {
+                            out.push_str(&String::from_utf8_lossy(&message));
+                        }
+                        LogOutput::Console { message } => {
+                            out.push_str(&String::from_utf8_lossy(&message));
+                        }
+                        LogOutput::StdIn { .. } => {}
+                    }
                 }
-                LogOutput::Console { message } => {
-                    out.push_str(&String::from_utf8_lossy(&message));
+                Err(err) => {
+                    if !had_chunks {
+                        if let Some(deploy_err) = self.errors.lock().await.get(logical_name) {
+                            return Ok(format!("Build / Deploy Error:\n{deploy_err}"));
+                        }
+                    }
+                    return Err(err);
                 }
-                LogOutput::StdIn { .. } => {}
+            }
+        }
+        if out.is_empty() {
+            if let Some(deploy_err) = self.errors.lock().await.get(logical_name) {
+                return Ok(format!("Build / Deploy Error:\n{deploy_err}"));
             }
         }
         Ok(out)

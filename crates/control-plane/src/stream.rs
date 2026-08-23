@@ -127,7 +127,8 @@ fn observed_from_proto(state: harbory_protocol::v1::ContainerState) -> ObservedC
         ContainerStatus::Removed => ObservedStatus::Removed,
         ContainerStatus::Error | ContainerStatus::Unspecified => ObservedStatus::Error,
     };
-    ObservedContainer { name: state.name, image: state.image, status }
+    let error = if state.error.is_empty() { None } else { Some(state.error) };
+    ObservedContainer { name: state.name, image: state.image, status, error }
 }
 
 /// Embeds the account's GitHub credential into the repo URL for this one
@@ -204,6 +205,10 @@ async fn reconcile_and_dispatch(
     if let Err(err) = store.replace_observed_containers(agent_id, &observed).await {
         tracing::warn!(%agent_id, ?err, "failed to persist observed container state");
         return true;
+    }
+
+    if let Err(err) = store.cleanup_converged_absent_containers(agent_id).await {
+        tracing::warn!(%agent_id, ?err, "failed to cleanup converged absent containers");
     }
 
     let desired = match store.get_desired_containers(agent_id).await {

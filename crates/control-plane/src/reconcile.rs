@@ -55,6 +55,7 @@ pub struct ObservedContainer {
     pub name: String,
     pub image: String,
     pub status: ObservedStatus,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,7 +126,7 @@ mod tests {
     }
 
     fn observed(name: &str, image: &str, status: ObservedStatus) -> ObservedContainer {
-        ObservedContainer { name: name.into(), image: image.into(), status }
+        ObservedContainer { name: name.into(), image: image.into(), status, error: None }
     }
 
     #[test]

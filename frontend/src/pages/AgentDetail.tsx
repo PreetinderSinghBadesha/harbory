@@ -23,6 +23,7 @@ interface ObservedContainer {
   name: string;
   image: string;
   status: string;
+  error?: string | null;
 }
 interface ContainersResponse {
   desired: DesiredContainer[];
@@ -58,7 +59,7 @@ function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClo
 
   const { data, isFetching, error, refetch } = useQuery({
     queryKey: ["container-logs", agentId, containerName, tail],
-    queryFn: () => apiFetch<ContainerLogsDto>(`/agents/${agentId}/containers/${containerName}/logs?tail=${tail}`),
+    queryFn: () => apiFetch<ContainerLogsDto>(`/agents/${agentId}/containers/${encodeURIComponent(containerName)}/logs?tail=${tail}`),
     retry: false,
     staleTime: 0,
   });
@@ -200,6 +201,29 @@ function HpBar({ online }: { online: boolean }) {
   );
 }
 
+function StatusBadge({ status }: { status: string }) {
+  const s = status.toLowerCase();
+  let bg = "#E4F9EE";
+  let color = "var(--hp-dark)";
+  let border = "var(--hp-dark)";
+
+  if (s === "error" || s === "dead" || s === "failed") {
+    bg = "#FDE8E8";
+    color = "var(--clay)";
+    border = "var(--clay)";
+  } else if (s === "absent" || s === "removing" || s === "removed" || s === "stopped" || s === "exited") {
+    bg = "#F3F0EA";
+    color = "#8A7E72";
+    border = "#8A7E72";
+  }
+
+  return (
+    <span className="badge" style={{ background: bg, color, borderColor: border }}>
+      {status.toUpperCase()}
+    </span>
+  );
+}
+
 export function AgentDetail() {
   const { agentId } = useParams<{ agentId: string }>();
   const queryClient = useQueryClient();
@@ -246,7 +270,7 @@ export function AgentDetail() {
 
   const deployContainer = useMutation({
     mutationFn: () =>
-      apiFetch<void>(`/agents/${agentId}/containers/${containerName}`, {
+      apiFetch<void>(`/agents/${agentId}/containers/${encodeURIComponent(containerName)}`, {
         method: "PUT",
         body: JSON.stringify(
           deploySource === "github"
@@ -264,7 +288,8 @@ export function AgentDetail() {
     },
   });
   const removeContainer = useMutation({
-    mutationFn: (name: string) => apiFetch<void>(`/agents/${agentId}/containers/${name}`, { method: "DELETE" }),
+    mutationFn: (name: string) =>
+      apiFetch<void>(`/agents/${agentId}/containers/${encodeURIComponent(name)}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["containers", agentId] }),
   });
 
@@ -275,7 +300,7 @@ export function AgentDetail() {
   const [upstreamPort, setUpstreamPort] = useState(8080);
   const deployRoute = useMutation({
     mutationFn: () =>
-      apiFetch<void>(`/agents/${agentId}/proxy-routes/${routeName}`, {
+      apiFetch<void>(`/agents/${agentId}/proxy-routes/${encodeURIComponent(routeName)}`, {
         method: "PUT",
         body: JSON.stringify({
           server_name: serverName,
@@ -290,7 +315,8 @@ export function AgentDetail() {
     },
   });
   const removeRoute = useMutation({
-    mutationFn: (name: string) => apiFetch<void>(`/agents/${agentId}/proxy-routes/${name}`, { method: "DELETE" }),
+    mutationFn: (name: string) =>
+      apiFetch<void>(`/agents/${agentId}/proxy-routes/${encodeURIComponent(name)}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["proxy-routes", agentId] }),
   });
 
@@ -400,74 +426,87 @@ export function AgentDetail() {
                   Changes take effect the next time this agent reports its state — up to one heartbeat interval, not
                   instantly.
                 </p>
-                {containers.data && containers.data.desired.length > 0 && (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>NAME</th>
-                        <th>IMAGE</th>
-                        <th>DESIRED</th>
-                        <th>OBSERVED</th>
-                        <th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {containers.data.desired.map((d) => {
-                        const observed = containers.data?.observed.find((o) => o.name === d.name);
-                        return (
-                          <tr key={d.name}>
-                            <td>{d.name}</td>
-                            <td>
-                              {d.source ? (
-                                <>
-                                  <span className="badge" style={{ background: "#E9F4FF", color: "var(--blue)", borderColor: "var(--blue)", marginRight: 6 }}>
-                                    GITHUB
-                                  </span>
-                                  {d.source.repo_url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "")}
-                                  {d.source.git_ref && `@${d.source.git_ref}`}
-                                </>
-                              ) : (
-                                d.image
-                              )}
-                            </td>
-                            <td>
-                              <span className="badge" style={{ background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }}>
-                                {d.status.toUpperCase()}
-                              </span>
-                            </td>
-                            <td>
-                              {observed ? (
-                                <span className="badge" style={{ background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }}>
-                                  {observed.status.toUpperCase()}
-                                </span>
-                              ) : (
-                                "—"
-                              )}
-                            </td>
-                            <td>
-                              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                                <button
-                                  type="button"
-                                  className="pixel-btn pixel-btn-ghost pixel-btn-sm"
-                                  onClick={() => setLogsModal({ containerName: d.name })}
-                                >
-                                  LOGS
-                                </button>
-                                <button
-                                  type="button"
-                                  className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                                  onClick={() => removeContainer.mutate(d.name)}
-                                >
-                                  REMOVE
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
+                {(() => {
+                  const activeContainers = containers.data?.desired.filter((d) => {
+                    if (d.status !== "absent") return true;
+                    const observed = containers.data?.observed.find((o) => o.name === d.name);
+                    return observed && observed.status !== "removed";
+                  });
+                  if (!activeContainers || activeContainers.length === 0) return null;
+                  return (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>NAME</th>
+                          <th>IMAGE / SOURCE</th>
+                          <th>DESIRED</th>
+                          <th>OBSERVED</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeContainers.map((d) => {
+                          const observed = containers.data?.observed.find((o) => o.name === d.name);
+                          const isAbsent = d.status === "absent";
+                          return (
+                            <tr key={d.name}>
+                              <td>{d.name}</td>
+                              <td>
+                                {d.source ? (
+                                  <>
+                                    <span className="badge" style={{ background: "#E9F4FF", color: "var(--blue)", borderColor: "var(--blue)", marginRight: 6 }}>
+                                      GITHUB
+                                    </span>
+                                    {d.source.repo_url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "")}
+                                    {d.source.git_ref && `@${d.source.git_ref}`}
+                                  </>
+                                ) : (
+                                  d.image
+                                )}
+                              </td>
+                              <td>
+                                <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
+                              </td>
+                              <td>
+                                {observed ? (
+                                  <div>
+                                    <StatusBadge status={observed.status} />
+                                    {observed.error && (
+                                      <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
+                                        ⚠ {observed.error}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                              <td>
+                                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                  <button
+                                    type="button"
+                                    className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                                    onClick={() => setLogsModal({ containerName: d.name })}
+                                  >
+                                    LOGS
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                                    onClick={() => removeContainer.mutate(d.name)}
+                                    disabled={removeContainer.isPending || isAbsent}
+                                  >
+                                    {isAbsent ? "REMOVING…" : "REMOVE"}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  );
+                })()}
                 <div style={{ display: "flex", gap: 8, marginTop: 14, marginBottom: 10 }}>
                   <button
                     type="button"

@@ -374,6 +374,7 @@ struct ObservedContainerDto {
     name: String,
     image: String,
     status: &'static str,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -425,6 +426,7 @@ async fn list_containers(
                     ObservedStatus::Removed => "removed",
                     ObservedStatus::Error => "error",
                 },
+                error: o.error,
             })
             .collect(),
     }))
