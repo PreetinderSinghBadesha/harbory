@@ -816,6 +816,7 @@ export function AgentDetail() {
                     type="submit"
                     className="pixel-btn pixel-btn-sm"
                     disabled={deployComposeStack.isPending || !github.data?.repos.length}
+                    style={{ alignSelf: "flex-start" }}
                   >
                     DEPLOY COMPOSE STACK
                   </button>
