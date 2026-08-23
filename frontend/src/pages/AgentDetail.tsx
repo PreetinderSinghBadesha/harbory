@@ -326,7 +326,8 @@ export function AgentDetail() {
       apiFetch<void>(`/agents/${agentId}/compose-stacks/${encodeURIComponent(composeName)}`, {
         method: "PUT",
         body: JSON.stringify({
-          source: { repo_url: repoUrlFor(composeSelectedRepo), git_ref: composeGitRef, dockerfile_path: "" },
+          repo_url: repoUrlFor(composeSelectedRepo),
+          git_ref: composeGitRef,
           compose_file_path: composeFilePath,
         }),
       }),
