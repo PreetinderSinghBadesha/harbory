@@ -17,6 +17,7 @@ use crate::github;
 use crate::jwks::JwkVerifier;
 use crate::reconcile::{DesiredContainer, DesiredStatus, GitSource, ObservedContainer, ObservedStatus, PortMapping};
 use crate::store::{AuditEventType, Store};
+use crate::stream::ConnectionRegistry;
 
 /// JSON API behind the dashboard — every route requires a valid Supabase
 /// JWT (`AuthenticatedAccount`, see auth.rs) and, for anything scoped to a
@@ -33,6 +34,9 @@ pub struct AppState {
     /// configured — verifies newer-style Supabase tokens. See `auth.rs`.
     pub jwks: JwkVerifier,
     pub metrics_handle: PrometheusHandle,
+    /// Live agent connections — used to forward log snapshot requests into
+    /// the persistent gRPC stream without a separate connection or RPC.
+    pub registry: ConnectionRegistry,
     /// GitHub OAuth App credentials + where to send the browser back to
     /// after the OAuth round trip — all `None`/absent when the GitHub
     /// integration isn't configured, which every handler that needs them
@@ -80,6 +84,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/:agent_id/revoke", post(revoke_agent))
         .route("/agents/:agent_id/containers", get(list_containers))
         .route("/agents/:agent_id/containers/:name", put(put_container).delete(delete_container))
+        .route("/agents/:agent_id/containers/:name/logs", get(get_container_logs))
         .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
         .route("/agents/:agent_id/proxy-routes/:name", put(put_proxy_route).delete(delete_proxy_route))
         .route("/github/oauth/start", post(github_oauth_start))
@@ -706,3 +711,51 @@ async fn delete_github_connection(State(state): State<AppState>, account: Authen
         Err(StatusCode::NOT_FOUND)
     }
 }
+
+#[derive(Deserialize)]
+struct LogsQuery {
+    #[serde(default)]
+    tail: u32,
+}
+
+#[derive(Serialize)]
+struct ContainerLogsDto {
+    logs: String,
+    error: String,
+}
+
+/// Fetches a snapshot of recent container logs by forwarding a `LogsRequest`
+/// over the agent's live gRPC stream and awaiting the `LogsResponse`.
+///
+/// 503 — agent has no live connection (offline or not yet connected)
+/// 504 — agent connected but didn't respond within 5 seconds
+async fn get_container_logs(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Path((agent_id, container_name)): Path<(Uuid, String)>,
+    Query(query): Query<LogsQuery>,
+) -> Result<Json<ContainerLogsDto>, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let request_id = Uuid::new_v4().to_string();
+    let tail = if query.tail == 0 { 100 } else { query.tail };
+
+    let rx = state
+        .registry
+        .request_logs(agent_id, request_id, container_name, tail)
+        .await
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?; // agent offline
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(Json(ContainerLogsDto { logs: resp.logs, error: resp.error })),
+        Ok(Err(_)) => {
+            // oneshot sender was dropped (connection died between sending and replying)
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
+        Err(_) => {
+            // 5-second timeout elapsed
+            Err(StatusCode::GATEWAY_TIMEOUT)
+        }
+    }
+}
+

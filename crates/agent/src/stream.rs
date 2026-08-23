@@ -6,7 +6,7 @@ use harbory_protocol::{
     v1::{
         agent_stream_service_client::AgentStreamServiceClient, container_command::Action as ContainerAction,
         control_plane_message::Payload as ControlPlanePayload, AgentMessage, ChallengeResponse, ContainerStateReport,
-        Heartbeat, Hello, ProxyState,
+        Heartbeat, Hello, LogsResponse, ProxyState,
     },
 };
 use tokio::sync::mpsc;
@@ -172,6 +172,21 @@ pub async fn run_stream(
                                         tracing::warn!(%err, "failed to apply proxy config");
                                         proxy_state.last_error = Some(err.to_string());
                                     }
+                                }
+                            }
+                            Some(ControlPlanePayload::LogsRequest(req)) => {
+                                let result = containers.logs(&req.container_name, req.tail_lines).await;
+                                let (logs, error) = match result {
+                                    Ok(text) => (text, String::new()),
+                                    Err(err) => (String::new(), err.to_string()),
+                                };
+                                let resp = AgentMessage {
+                                    payload: Some(harbory_protocol::v1::agent_message::Payload::LogsResponse(
+                                        LogsResponse { request_id: req.request_id, logs, error },
+                                    )),
+                                };
+                                if tx.send(resp).await.is_err() {
+                                    anyhow::bail!("outbound channel closed while sending logs response");
                                 }
                             }
                             _ => {

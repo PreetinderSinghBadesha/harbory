@@ -49,6 +49,7 @@ fn test_app(store: Store) -> axum::Router {
         jwt_secret: Some(TEST_JWT_SECRET.to_string()),
         jwks: JwkVerifier::empty(),
         metrics_handle,
+        registry: harbory_control_plane::stream::ConnectionRegistry::default(),
         github_client_id: None,
         github_client_secret: None,
         github_redirect_uri: None,

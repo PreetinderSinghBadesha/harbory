@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use bollard::container::{
-    Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions, StartContainerOptions,
-    StopContainerOptions,
+    Config, CreateContainerOptions, ListContainersOptions, LogOutput, LogsOptions, RemoveContainerOptions,
+    StartContainerOptions, StopContainerOptions,
 };
 use bollard::image::CreateImageOptions;
 use bollard::models::{HostConfig, PortBinding};
@@ -209,5 +209,35 @@ impl ContainerManager {
         }
 
         Ok(states)
+    }
+    /// Fetches the last `tail` lines of stdout+stderr from the named container.
+    /// `tail == 0` uses a sensible default (100 lines).
+    /// Returns `Err` only on Docker API failures; a missing container is
+    /// represented as an Ok with an error string rather than a hard error so
+    /// the agent can surface it cleanly to the control plane.
+    pub async fn logs(&self, logical_name: &str, tail: u32) -> Result<String, bollard::errors::Error> {
+        let name = docker_name(logical_name);
+        let tail_str = if tail == 0 { "100".to_string() } else { tail.to_string() };
+        let options = LogsOptions::<String> {
+            stdout: true,
+            stderr: true,
+            follow: false,
+            tail: tail_str,
+            ..Default::default()
+        };
+        let mut stream = self.docker.logs(&name, Some(options));
+        let mut out = String::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk? {
+                LogOutput::StdOut { message } | LogOutput::StdErr { message } => {
+                    out.push_str(&String::from_utf8_lossy(&message));
+                }
+                LogOutput::Console { message } => {
+                    out.push_str(&String::from_utf8_lossy(&message));
+                }
+                LogOutput::StdIn { .. } => {}
+            }
+        }
+        Ok(out)
     }
 }

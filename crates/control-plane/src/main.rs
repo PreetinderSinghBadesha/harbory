@@ -6,7 +6,7 @@ use harbory_control_plane::{
     http::{self, AppState},
     jwks::JwkVerifier,
     store::Store,
-    stream::AgentStreamServiceImpl,
+    stream::{AgentStreamServiceImpl, ConnectionRegistry},
 };
 use harbory_protocol::v1::{
     agent_stream_service_server::AgentStreamServiceServer, pairing_service_server::PairingServiceServer,
@@ -65,8 +65,11 @@ async fn main() -> anyhow::Result<()> {
         None => JwkVerifier::empty(),
     };
 
+    let registry = ConnectionRegistry::new();
+
     let grpc_store = store.clone();
     let grpc_signer = signer.clone();
+    let grpc_registry = registry.clone();
     let grpc_addr_parsed = grpc_addr.parse()?;
     let grpc_server = async move {
         tracing::info!(addr = %grpc_addr, "starting harbory control plane (gRPC)");
@@ -82,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
                 signer: grpc_signer,
                 heartbeat_interval_seconds,
                 missed_heartbeat_threshold,
+                registry: grpc_registry,
             }))
             .serve(grpc_addr_parsed)
             .await
@@ -95,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_secret,
         jwks,
         metrics_handle,
+        registry,
         github_client_id,
         github_client_secret,
         github_redirect_uri,

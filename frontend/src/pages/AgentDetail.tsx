@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, useCallback, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
@@ -43,6 +43,153 @@ interface ProxyRoutesResponse {
   error: string | null;
 }
 
+interface ContainerLogsDto {
+  logs: string;
+  error: string;
+}
+
+interface LogsModalState {
+  containerName: string;
+  agentId: string;
+}
+
+function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClose: () => void }) {
+  const [tail, setTail] = useState(100);
+
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ["container-logs", agentId, containerName, tail],
+    queryFn: () => apiFetch<ContainerLogsDto>(`/agents/${agentId}/containers/${containerName}/logs?tail=${tail}`),
+    retry: false,
+    staleTime: 0,
+  });
+
+  const handleBackdropClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) onClose();
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={handleBackdropClick}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.72)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+    >
+      <div
+        className="pixel-panel"
+        style={{
+          width: "100%",
+          maxWidth: 820,
+          maxHeight: "80vh",
+          display: "flex",
+          flexDirection: "column",
+          background: "#0F0E0C",
+          color: "#E8DCC8",
+          overflow: "hidden",
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "12px 16px",
+            borderBottom: "3px solid #2A2520",
+            flexShrink: 0,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span className="pixel" style={{ fontSize: 11, color: "var(--gold)" }}>LOGS</span>
+            <span className="mono" style={{ fontSize: 12, color: "#888", fontWeight: 600 }}>{containerName}</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <select
+              className="mono"
+              value={tail}
+              onChange={(e) => setTail(Number(e.target.value))}
+              style={{
+                background: "#1A1814",
+                color: "#E8DCC8",
+                border: "2px solid #3A342C",
+                padding: "3px 6px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              <option value={50}>50 lines</option>
+              <option value={100}>100 lines</option>
+              <option value={200}>200 lines</option>
+              <option value={500}>500 lines</option>
+            </select>
+            <button
+              type="button"
+              className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              style={{ fontSize: 10 }}
+            >
+              {isFetching ? "…" : "↺ REFRESH"}
+            </button>
+            <button
+              type="button"
+              className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+              onClick={onClose}
+              style={{ fontSize: 10 }}
+            >
+              ✕ CLOSE
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflow: "auto", padding: 16, minHeight: 0 }}>
+          {isFetching && !data && (
+            <p className="mono" style={{ color: "#888", fontSize: 12 }}>Fetching logs…</p>
+          )}
+          {error && (
+            <div className="alert-row" style={{ fontSize: 12 }}>
+              {(error as { status?: number }).status === 503
+                ? "Agent is offline — logs not available."
+                : (error as { status?: number }).status === 504
+                  ? "Timed out waiting for the agent (5 s). Try again."
+                  : (error as Error).message}
+            </div>
+          )}
+          {data?.error && !data.logs && (
+            <div className="alert-row" style={{ fontSize: 12 }}>{data.error}</div>
+          )}
+          {data?.logs && (
+            <pre
+              style={{
+                margin: 0,
+                fontFamily: "'JetBrains Mono', 'Fira Mono', monospace",
+                fontSize: 12,
+                lineHeight: 1.6,
+                color: "#C8D8B8",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+              }}
+            >
+              {data.logs}
+            </pre>
+          )}
+          {data && !data.logs && !data.error && !isFetching && (
+            <p className="mono" style={{ color: "#888", fontSize: 12 }}>No log output yet.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HpBar({ online }: { online: boolean }) {
   return (
     <div className="hp-bar" style={{ justifyContent: "flex-start", marginBottom: 6 }}>
@@ -56,6 +203,8 @@ function HpBar({ online }: { online: boolean }) {
 export function AgentDetail() {
   const { agentId } = useParams<{ agentId: string }>();
   const queryClient = useQueryClient();
+
+  const [logsModal, setLogsModal] = useState<{ containerName: string } | null>(null);
 
   // No single-agent endpoint exists — the list is the only source for this
   // agent's own status/online/last-heartbeat, so this page shares the same
@@ -296,13 +445,22 @@ export function AgentDetail() {
                               )}
                             </td>
                             <td>
-                              <button
-                                type="button"
-                                className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                                onClick={() => removeContainer.mutate(d.name)}
-                              >
-                                REMOVE
-                              </button>
+                              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                <button
+                                  type="button"
+                                  className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                                  onClick={() => setLogsModal({ containerName: d.name })}
+                                >
+                                  LOGS
+                                </button>
+                                <button
+                                  type="button"
+                                  className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                                  onClick={() => removeContainer.mutate(d.name)}
+                                >
+                                  REMOVE
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );

@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use harbory_common::keypair::{verify, Keypair};
@@ -8,13 +10,14 @@ use harbory_protocol::{
         agent_message::Payload as AgentPayload, agent_stream_service_server::AgentStreamService,
         container_command::Action as ContainerAction, control_plane_message::Payload as ControlPlanePayload,
         AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, GitSource as ProtoGitSource,
-        Heartbeat as HeartbeatMsg, HeartbeatAck, PortMapping as ProtoPortMapping, ProxyConfig, Welcome,
+        Heartbeat as HeartbeatMsg, HeartbeatAck, LogsResponse, PortMapping as ProtoPortMapping, ProxyConfig, Welcome,
     },
 };
 use rand::RngCore;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
+use uuid::Uuid;
 
 use crate::metrics::ConnectedAgentGuard;
 use crate::reconcile::{self, Action, ObservedContainer, ObservedStatus};
@@ -27,6 +30,79 @@ pub struct AgentStreamServiceImpl {
     pub signer: Keypair,
     pub heartbeat_interval_seconds: u32,
     pub missed_heartbeat_threshold: u32,
+    pub registry: ConnectionRegistry,
+}
+
+/// Tracks all currently-connected agents so the HTTP layer can forward
+/// one-off requests (e.g. log fetches) into the live stream without
+/// needing a separate connection or a new gRPC RPC.
+///
+/// Structure per agent:
+///   outbound   — send messages down the stream to the agent
+///   pending_logs — map of request_id → oneshot::Sender waiting for
+///                  the agent's LogsResponse
+#[derive(Clone, Default)]
+pub struct ConnectionRegistry {
+    inner: Arc<Mutex<HashMap<Uuid, ConnectedAgent>>>,
+}
+
+struct ConnectedAgent {
+    outbound: mpsc::Sender<Result<ControlPlaneMessage, Status>>,
+    pending_logs: HashMap<String, oneshot::Sender<LogsResponse>>,
+}
+
+impl ConnectionRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    async fn register(&self, agent_id: Uuid, outbound: mpsc::Sender<Result<ControlPlaneMessage, Status>>) {
+        self.inner.lock().await.insert(agent_id, ConnectedAgent { outbound, pending_logs: HashMap::new() });
+    }
+
+    async fn deregister(&self, agent_id: Uuid) {
+        self.inner.lock().await.remove(&agent_id);
+    }
+
+    /// Send a `LogsRequest` to a connected agent and return a `Receiver`
+    /// that will be resolved when the agent sends its `LogsResponse`.
+    /// Returns `None` if the agent has no live connection.
+    pub async fn request_logs(
+        &self,
+        agent_id: Uuid,
+        request_id: String,
+        container_name: String,
+        tail_lines: u32,
+    ) -> Option<oneshot::Receiver<LogsResponse>> {
+        let mut guard = self.inner.lock().await;
+        let conn = guard.get_mut(&agent_id)?;
+        let (tx, rx) = oneshot::channel();
+        conn.pending_logs.insert(request_id.clone(), tx);
+        let msg = ControlPlaneMessage {
+            payload: Some(ControlPlanePayload::LogsRequest(harbory_protocol::v1::LogsRequest {
+                request_id: request_id.clone(),
+                container_name,
+                tail_lines,
+            })),
+        };
+        if conn.outbound.send(Ok(msg)).await.is_err() {
+            // Stream is dead — remove the pending entry we just inserted.
+            conn.pending_logs.remove(&request_id);
+            return None;
+        }
+        Some(rx)
+    }
+
+    /// Resolve a pending log request. Called by `drive_connection` when
+    /// the agent sends a `LogsResponse`.
+    async fn resolve_logs(&self, agent_id: Uuid, response: LogsResponse) {
+        let mut guard = self.inner.lock().await;
+        if let Some(conn) = guard.get_mut(&agent_id) {
+            if let Some(tx) = conn.pending_logs.remove(&response.request_id) {
+                let _ = tx.send(response);
+            }
+        }
+    }
 }
 
 type AgentStream = Pin<Box<dyn Stream<Item = Result<ControlPlaneMessage, Status>> + Send>>;
@@ -203,6 +279,7 @@ async fn drive_connection(
     missed_heartbeat_threshold: u32,
     mut inbound: Streaming<AgentMessage>,
     tx: Outbound,
+    registry: ConnectionRegistry,
 ) {
     macro_rules! fail {
         ($status:expr) => {{
@@ -285,13 +362,16 @@ async fn drive_connection(
     // decrement call.
     let _connected_guard = ConnectedAgentGuard::new();
 
+    let agent_id = agent.id;
+
+    // Register this connection so the HTTP layer can send log requests.
+    registry.register(agent_id, tx.clone()).await;
+
     // Step 4: heartbeats and container state reports, for as long as the
     // connection stays open. Commands are dispatched only in response to
     // a state report (reconcile_and_dispatch), not pushed the instant
     // desired state changes elsewhere — see docs/reconciliation.md for why
-    // that's an acceptable simplification (no shared connection registry
-    // needed) rather than an oversight.
-    let agent_id = agent.id;
+    // that's an acceptable simplification rather than an oversight.
     loop {
         match inbound.next().await {
             Some(Ok(AgentMessage { payload: Some(AgentPayload::Heartbeat(HeartbeatMsg { .. })) })) => {
@@ -315,6 +395,9 @@ async fn drive_connection(
                     break;
                 }
             }
+            Some(Ok(AgentMessage { payload: Some(AgentPayload::LogsResponse(resp)) })) => {
+                registry.resolve_logs(agent_id, resp).await;
+            }
             Some(Ok(_)) => {
                 tracing::debug!(%agent_id, "ignoring unexpected message after handshake");
             }
@@ -328,6 +411,8 @@ async fn drive_connection(
             }
         }
     }
+
+    registry.deregister(agent_id).await;
 }
 
 #[tonic::async_trait]
@@ -348,6 +433,7 @@ impl AgentStreamService for AgentStreamServiceImpl {
             self.missed_heartbeat_threshold,
             inbound,
             tx,
+            self.registry.clone(),
         ));
 
         Ok(Response::new(Box::pin(ReceiverStream::new(rx)) as Self::StreamStream))

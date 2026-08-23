@@ -43,6 +43,7 @@ async fn spawn_server(store: Store, signer: Keypair) -> SocketAddr {
                 signer,
                 heartbeat_interval_seconds: 1,
                 missed_heartbeat_threshold: 3,
+                registry: harbory_control_plane::stream::ConnectionRegistry::default(),
             }))
             .serve_with_incoming(incoming)
             .await

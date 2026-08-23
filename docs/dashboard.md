@@ -26,7 +26,7 @@ user's own decision, not something decided unilaterally. Concretely:
   unchanged. `DATABASE_URL` for a real deployment points at Supabase's
   connection string instead of the local `harbory-postgres` container.
 
-## Required setup (you, not Claude Code — account creation is out of scope for the agent)
+## Required setup (manual — account creation is out of scope for local dev)
 
 1. Create a project at [supabase.com](https://supabase.com/dashboard) (or use an existing one).
 2. **Project Settings -> API**: Project URL, publishable (`anon`) public key.
@@ -162,8 +162,7 @@ Every previous phase's smoke test ran the real compiled binaries against
 real infrastructure this environment could stand up itself (real
 Postgres, real Docker; Phase 4 was the first partial exception, for
 nginx). This phase is a full exception: creating a Supabase project is an
-account-creation step outside what Claude Code can do on the user's
-behalf, so the actual login flow — real signup, real OAuth handoff, a
+account-creation step outside of local dev, so the actual login flow — real signup, real OAuth handoff, a
 real Supabase-issued JWT reaching the real backend — has not been
 exercised end-to-end as of this write-up.
 
