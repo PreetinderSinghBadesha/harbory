@@ -108,16 +108,41 @@ message PortMapping {
   uint32 container_port = 2;
 }
 
+// Builds the image from a git repo instead of pulling a pre-built one —
+// see GitSource on ContainerSpec below for how it interacts with `image`.
+message GitSource {
+  // Plain https URL — the control plane embeds a clone credential into
+  // this only in the message it actually sends over the wire, never in
+  // what it persists to its own database.
+  string repo_url = 1;
+  // Branch, tag, or commit sha. Empty = the repo's default branch.
+  string git_ref = 2;
+  // Path to the Dockerfile, relative to the repo root. Empty =
+  // "Dockerfile" at the root.
+  string dockerfile_path = 3;
+}
+
 message ContainerSpec {
   // Logical name, unique per agent. The agent derives the actual Docker
   // container name from this (prefixed, labeled) — see
   // crates/agent/src/container.rs.
   string name = 1;
+  // A real pullable image reference, OR — if git_source is set — a
+  // synthetic "git+<repo_url>#<git_ref>" identity string used only for
+  // reconciliation comparison and never passed to Docker directly. The
+  // agent echoes this exact string back as the image on its
+  // ContainerState report (via a `harbory.image` label, not Docker's own
+  // reported image) specifically so the two stay comparable regardless
+  // of which case this is — see docs/reconciliation.md.
   string image = 2;
   repeated string env = 3;      // "KEY=VALUE" entries
   repeated PortMapping ports = 4;
   // Empty = use the image's own ENTRYPOINT/CMD.
   repeated string command = 5;
+  // If set, the agent builds this locally (via the Docker daemon's own
+  // git-remote build-context support) instead of pulling `image` from a
+  // registry.
+  optional GitSource git_source = 6;
 }
 
 message ContainerCommand {

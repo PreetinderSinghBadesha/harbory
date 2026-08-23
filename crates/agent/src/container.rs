@@ -11,12 +11,32 @@ use harbory_protocol::v1::{ContainerSpec, ContainerState, ContainerStatus};
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 
+use crate::git_build;
+
 /// Only containers carrying this label are ever listed, reported, or
 /// touched by `remove`/`deploy`'s cleanup step — critical on a host that
 /// also runs containers Harbory doesn't own. Never do an unfiltered
 /// `list_containers`/`remove_container` sweep in this module.
 const MANAGED_LABEL: &str = "harbory.managed";
 const NAME_LABEL: &str = "harbory.name";
+/// Echoes back the exact `spec.image` string a container was deployed
+/// with (real pull ref, or the synthetic "git+..." identity string for a
+/// git-sourced deploy — see ContainerSpec.image in harbory.proto).
+/// `list_state` reads this instead of Docker's own reported image so
+/// reconciliation compares against what was actually *desired*, not
+/// whatever Docker/the daemon happens to report for the real underlying
+/// image — which for a git-sourced container is a local build tag that
+/// would otherwise never match the control plane's synthetic identity
+/// string, permanently failing to converge.
+const IMAGE_LABEL: &str = "harbory.image";
+
+#[derive(Debug, thiserror::Error)]
+pub enum DeployError {
+    #[error(transparent)]
+    Docker(#[from] bollard::errors::Error),
+    #[error(transparent)]
+    Build(#[from] git_build::BuildError),
+}
 
 pub struct ContainerManager {
     docker: Docker,
@@ -43,7 +63,7 @@ impl ContainerManager {
     /// fresh. Simpler and more robust than diffing/patching in place, and
     /// it's what makes `reconcile::Action::Deploy` correct for "wrong
     /// image running" and "crashed" cases, not just "doesn't exist yet".
-    pub async fn deploy(&self, spec: &ContainerSpec) -> Result<(), bollard::errors::Error> {
+    pub async fn deploy(&self, spec: &ContainerSpec) -> Result<(), DeployError> {
         match self.try_deploy(spec).await {
             Ok(()) => {
                 self.errors.lock().await.remove(&spec.name);
@@ -56,33 +76,44 @@ impl ContainerManager {
         }
     }
 
-    async fn try_deploy(&self, spec: &ContainerSpec) -> Result<(), bollard::errors::Error> {
+    async fn try_deploy(&self, spec: &ContainerSpec) -> Result<(), DeployError> {
         let name = docker_name(&spec.name);
         self.force_remove(&name).await;
 
-        // Unlike `docker run`, bollard's create_container doesn't pull a
-        // missing image on its own — found the hard way against a real
-        // daemon (create_container 404'd with "No such image"). Pull
-        // errors are deliberately swallowed rather than propagated: the
-        // image might already exist locally under this exact tag (offline
-        // dev, a custom-built image never pushed anywhere), in which case
-        // create_container below still succeeds; if it doesn't exist
-        // either way, create_container's own error is the one that matters.
-        let mut pull = self.docker.create_image(
-            Some(CreateImageOptions { from_image: spec.image.as_str(), ..Default::default() }),
-            None,
-            None,
-        );
-        while let Some(result) = pull.next().await {
-            if let Err(err) = result {
-                tracing::debug!(image = %spec.image, %err, "image pull failed, will still try create_container");
-                break;
+        // A git-sourced deploy builds a real local tag first and runs
+        // that — `spec.image` for that case is only the synthetic
+        // reconciliation-comparison identity (see IMAGE_LABEL above), not
+        // something that exists in any registry to pull.
+        let image_to_run = if let Some(source) = &spec.git_source {
+            git_build::build(&self.docker, &spec.name, source).await?
+        } else {
+            // Unlike `docker run`, bollard's create_container doesn't pull
+            // a missing image on its own — found the hard way against a
+            // real daemon (create_container 404'd with "No such image").
+            // Pull errors are deliberately swallowed rather than
+            // propagated: the image might already exist locally under
+            // this exact tag (offline dev, a custom-built image never
+            // pushed anywhere), in which case create_container below
+            // still succeeds; if it doesn't exist either way,
+            // create_container's own error is the one that matters.
+            let mut pull = self.docker.create_image(
+                Some(CreateImageOptions { from_image: spec.image.as_str(), ..Default::default() }),
+                None,
+                None,
+            );
+            while let Some(result) = pull.next().await {
+                if let Err(err) = result {
+                    tracing::debug!(image = %spec.image, %err, "image pull failed, will still try create_container");
+                    break;
+                }
             }
-        }
+            spec.image.clone()
+        };
 
         let mut labels = HashMap::new();
         labels.insert(MANAGED_LABEL.to_string(), "true".to_string());
         labels.insert(NAME_LABEL.to_string(), spec.name.clone());
+        labels.insert(IMAGE_LABEL.to_string(), spec.image.clone());
 
         let mut exposed_ports: HashMap<String, HashMap<(), ()>> = HashMap::new();
         let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
@@ -96,7 +127,7 @@ impl ContainerManager {
         }
 
         let config = Config {
-            image: Some(spec.image.clone()),
+            image: Some(image_to_run),
             env: Some(spec.env.clone()),
             cmd: if spec.command.is_empty() { None } else { Some(spec.command.clone()) },
             labels: Some(labels),
@@ -151,7 +182,11 @@ impl ContainerManager {
             .into_iter()
             .map(|c| {
                 let name = c.labels.as_ref().and_then(|l| l.get(NAME_LABEL)).cloned().unwrap_or_default();
-                let image = c.image.unwrap_or_default();
+                // The label, not `c.image` — see IMAGE_LABEL's doc comment
+                // for why (git-sourced containers need this to be the
+                // synthetic identity string, not Docker's real local tag,
+                // for reconciliation to ever converge).
+                let image = c.labels.as_ref().and_then(|l| l.get(IMAGE_LABEL)).cloned().unwrap_or_default();
                 let status = match c.state.as_deref() {
                     Some("running") => ContainerStatus::Running,
                     Some("exited") | Some("dead") | Some("created") => ContainerStatus::Stopped,

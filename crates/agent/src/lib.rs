@@ -1,4 +1,7 @@
-//! Exposes just enough for `examples/render_proxy_config.rs` to reuse the
-//! real `render` implementation when verifying its output against a real
-//! nginx parser — the binary target (`main.rs`) is the actual agent.
+//! Exposes just enough for the dev-only examples under `examples/` to
+//! reuse real implementations when smoke-testing against a live
+//! nginx/Docker install — the binary target (`main.rs`) is the actual
+//! agent.
+pub mod container;
+pub mod git_build;
 pub mod proxy;

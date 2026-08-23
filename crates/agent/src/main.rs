@@ -1,5 +1,6 @@
 mod backoff;
 mod container;
+mod git_build;
 mod proxy;
 mod stream;
 mod transport;

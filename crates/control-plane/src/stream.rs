@@ -67,6 +67,11 @@ fn action_to_command(action: Action) -> ContainerCommand {
                     .map(|p| ProtoPortMapping { host_port: p.host_port as u32, container_port: p.container_port as u32 })
                     .collect(),
                 command: d.command,
+                // Deploying from a git repo isn't wired up on the
+                // control-plane side yet (Phase 2 is agent-build-capability
+                // only, tested in isolation) — DesiredContainer has no
+                // git-source field to plumb through here yet.
+                git_source: None,
             })),
         },
         Action::Remove(name) => ContainerCommand { action: Some(ContainerAction::Remove(name)) },
