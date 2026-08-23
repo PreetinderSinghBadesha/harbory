@@ -56,7 +56,7 @@ pub async fn build(_docker: &Docker, logical_name: &str, source: &GitSource) -> 
         source.repo_url.clone() // Clone the repo URL, checkout the ref later
     };
 
-    let temp_dir = tempfile::tempdir().map_err(|e| BuildError::Build(format!("Failed to create temp dir: {}", e)))?;
+    let temp_dir = tempfile::tempdir_in(".").map_err(|e| BuildError::Build(format!("Failed to create temp dir: {}", e)))?;
     let repo_dir = temp_dir.path().join("repo");
 
     // 1. Git clone
