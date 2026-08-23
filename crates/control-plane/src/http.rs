@@ -495,7 +495,7 @@ async fn put_compose_stack(
     
     // We don't have AuditEventType::PutComposeStack yet, using a dummy or omitting.
     // state.store.log_audit_event(agent_id, AuditEventType::PutComposeStack, &name).await.ok();
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn delete_compose_stack(
@@ -519,7 +519,7 @@ async fn delete_compose_stack(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_compose_stacks(
