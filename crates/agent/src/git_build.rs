@@ -68,14 +68,35 @@ pub async fn build(docker: &Docker, logical_name: &str, source: &GitSource) -> R
     };
 
     let mut stream = docker.build_image(options, None, None);
-    while let Some(chunk) = stream.next().await {
-        let info = chunk?;
-        // Build failures (bad Dockerfile, git clone failure, missing
-        // branch, ...) surface as an `error` field on an otherwise
-        // successfully-received stream item, not as a transport `Err` —
-        // the stream itself is expected to end shortly after this.
-        if let Some(error) = info.error {
-            return Err(BuildError::Build(error));
+    let mut build_logs = String::new();
+
+    while let Some(chunk_res) = stream.next().await {
+        match chunk_res {
+            Ok(info) => {
+                if let Some(s) = info.stream {
+                    build_logs.push_str(&s);
+                }
+                if let Some(s) = info.status {
+                    build_logs.push_str(&s);
+                    build_logs.push('\n');
+                }
+                if let Some(error) = info.error {
+                    if !build_logs.is_empty() {
+                        return Err(BuildError::Build(format!("{build_logs}\nError: {error}")));
+                    }
+                    return Err(BuildError::Build(error));
+                }
+            }
+            Err(err) => {
+                let err_msg = match &err {
+                    bollard::errors::Error::DockerStreamError { error } => error.clone(),
+                    other => other.to_string(),
+                };
+                if !build_logs.is_empty() {
+                    return Err(BuildError::Build(format!("{build_logs}\nDocker stream error: {err_msg}")));
+                }
+                return Err(BuildError::Build(format!("Docker build failed: {err_msg}")));
+            }
         }
     }
 
