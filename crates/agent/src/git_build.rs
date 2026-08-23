@@ -6,10 +6,8 @@
 //! the clone internally, exactly like `docker build <git-url>` from the
 //! CLI does.
 
-use bollard::image::BuildImageOptions;
 use bollard::Docker;
 use harbory_protocol::v1::GitSource;
-use tokio_stream::StreamExt;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -48,57 +46,31 @@ fn tag_for(logical_name: &str) -> String {
 /// this only in the wire message it sends, never in what it persists) —
 /// this function doesn't know or care whether the repo is public or
 /// private.
-pub async fn build(docker: &Docker, logical_name: &str, source: &GitSource) -> Result<String, BuildError> {
+pub async fn build(_docker: &Docker, logical_name: &str, source: &GitSource) -> Result<String, BuildError> {
     let tag = tag_for(logical_name);
-
-    let mut remote = source.repo_url.clone();
-    if !source.git_ref.is_empty() {
-        remote.push('#');
-        remote.push_str(&source.git_ref);
-    }
     let dockerfile = if source.dockerfile_path.is_empty() { "Dockerfile" } else { source.dockerfile_path.as_str() };
-
-    let options = BuildImageOptions::<String> {
-        dockerfile: dockerfile.to_string(),
-        t: tag.clone(),
-        remote,
-        rm: true,
-        forcerm: true,
-        version: bollard::image::BuilderVersion::BuilderBuildKit,
-        ..Default::default()
+    let remote = if source.git_ref.is_empty() {
+        source.repo_url.clone()
+    } else {
+        format!("{}#{}", source.repo_url, source.git_ref)
     };
 
-    let mut stream = docker.build_image(options, None, None);
-    let mut build_logs = String::new();
+    let output = tokio::process::Command::new("docker")
+        .args(["build", "-t", &tag, "-f", dockerfile, &remote])
+        .env("DOCKER_BUILDKIT", "1")
+        .output()
+        .await
+        .map_err(|e| BuildError::Build(format!("Failed to execute docker build: {}", e)))?;
 
-    while let Some(chunk_res) = stream.next().await {
-        match chunk_res {
-            Ok(info) => {
-                if let Some(s) = info.stream {
-                    build_logs.push_str(&s);
-                }
-                if let Some(s) = info.status {
-                    build_logs.push_str(&s);
-                    build_logs.push('\n');
-                }
-                if let Some(error) = info.error {
-                    if !build_logs.is_empty() {
-                        return Err(BuildError::Build(format!("{build_logs}\nError: {error}")));
-                    }
-                    return Err(BuildError::Build(error));
-                }
-            }
-            Err(err) => {
-                let err_msg = match &err {
-                    bollard::errors::Error::DockerStreamError { error } => error.clone(),
-                    other => other.to_string(),
-                };
-                if !build_logs.is_empty() {
-                    return Err(BuildError::Build(format!("{build_logs}\nDocker stream error: {err_msg}")));
-                }
-                return Err(BuildError::Build(format!("Docker build failed: {err_msg}")));
-            }
-        }
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(BuildError::Build(format!(
+            "Docker build failed with exit code: {}\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+            output.status.code().unwrap_or(-1),
+            stdout,
+            stderr
+        )));
     }
 
     Ok(tag)
