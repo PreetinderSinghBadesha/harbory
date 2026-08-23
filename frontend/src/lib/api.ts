@@ -2,6 +2,15 @@ import { supabase } from "./supabase";
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8080";
 
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 /** Every call attaches the current Supabase session's access token as a
  * Bearer credential — the control plane verifies it against the same
  * project's JWT secret (crates/control-plane/src/auth.rs). Throws with
@@ -21,7 +30,10 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(`${options.method ?? "GET"} ${path} failed: ${response.status} ${body}`);
+    throw new ApiError(
+      body || `${options.method ?? "GET"} ${path} failed: ${response.status}`,
+      response.status,
+    );
   }
 
   if (response.status === 204) {

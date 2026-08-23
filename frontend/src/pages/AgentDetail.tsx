@@ -157,9 +157,9 @@ function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClo
           )}
           {error && (
             <div className="alert-row" style={{ fontSize: 12 }}>
-              {(error as { status?: number }).status === 503
+              {(error as { status?: number }).status === 503 || (error as Error).message?.includes("503")
                 ? "Agent is offline — logs not available."
-                : (error as { status?: number }).status === 504
+                : (error as { status?: number }).status === 504 || (error as Error).message?.includes("504")
                   ? "Timed out waiting for the agent (5 s). Try again."
                   : (error as Error).message}
             </div>
