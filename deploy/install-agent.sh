@@ -64,10 +64,19 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 1
 fi
 
-HAVE_NGINX=0
-if command -v nginx >/dev/null 2>&1; then
-  HAVE_NGINX=1
+if ! command -v nginx >/dev/null 2>&1; then
+  log "nginx not found. Attempting to install..."
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y nginx
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y nginx
+  else
+    echo "Could not automatically install nginx. Please install it manually first." >&2
+    exit 1
+  fi
 fi
+HAVE_NGINX=1
 
 log "Building harbory-agent (cargo install --git, as $(whoami))"
 cargo install --git "$REPO_URL" --force harbory-agent
@@ -160,8 +169,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$SERVICE_USER
-Group=$SERVICE_USER
+User=root
+Group=root
 WorkingDirectory=$DATA_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=$BIN_PATH
