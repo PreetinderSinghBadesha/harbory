@@ -273,8 +273,8 @@ async fn reconcile_compose_and_dispatch(
         },
         compose_file_path: d.compose_file_path,
         status: match d.desired_status.as_str() {
-            "running" => DesiredStatus::Running,
-            _ => DesiredStatus::Absent,
+            "running" => crate::reconcile::DesiredStatus::Running,
+            _ => crate::reconcile::DesiredStatus::Absent,
         },
     }).collect::<Vec<_>>();
 

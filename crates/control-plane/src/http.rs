@@ -477,13 +477,7 @@ async fn put_compose_stack(
 ) -> Result<StatusCode, StatusCode> {
     require_owned_agent(&state, &account, agent_id).await?;
 
-    let repo_url = if let Some(install_id) = state.store.get_github_installation_id(account.id).await.unwrap_or(None) {
-        if let Some((cid, csec)) = state.github_client_id.as_ref().zip(state.github_client_secret.as_ref()) {
-            if let Ok(token) = github::get_installation_token(install_id, cid, csec).await {
-                github::inject_token_into_url(&req.repo_url, &token).unwrap_or(req.repo_url)
-            } else { req.repo_url }
-        } else { req.repo_url }
-    } else { req.repo_url };
+    let repo_url = req.repo_url;
 
     let stack = crate::store::DesiredComposeStack {
         agent_id,
@@ -541,7 +535,7 @@ async fn list_compose_stacks(
     Ok(Json(ComposeStacksDto {
         desired: desired.into_iter().map(|d| ComposeStackOutDto {
             name: d.name,
-            repo_url: github::strip_token_from_url(&d.repo_url).unwrap_or(d.repo_url),
+            repo_url: d.repo_url,
             git_ref: d.git_ref,
             compose_file_path: d.compose_file_path,
             status: if d.desired_status == "absent" { "absent" } else { "running" },
