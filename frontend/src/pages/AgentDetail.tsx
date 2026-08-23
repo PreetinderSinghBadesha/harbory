@@ -274,6 +274,8 @@ export function AgentDetail() {
     refetchInterval: 5000,
   });
 
+  const [deployTab, setDeployTab] = useState<"container" | "compose">("container");
+
   const [containerName, setContainerName] = useState("");
   const [deploySource, setDeploySource] = useState<"image" | "github">("image");
   const [image, setImage] = useState("");
@@ -484,11 +486,29 @@ export function AgentDetail() {
 
             <div style={{ padding: "26px 30px" }}>
               <div style={{ marginBottom: 24 }}>
-                <div className="eyebrow" style={{ marginBottom: 10 }}>CONTAINERS</div>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>DEPLOYMENTS</div>
                 <p className="mono" style={{ fontSize: 11, color: "var(--muted)", marginTop: 0 }}>
                   Changes take effect the next time this agent reports its state — up to one heartbeat interval, not
                   instantly.
                 </p>
+                <div style={{ display: "flex", gap: 8, marginTop: 14, marginBottom: 14 }}>
+                  <button
+                    type="button"
+                    className={deployTab === "container" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                    onClick={() => setDeployTab("container")}
+                  >
+                    SINGLE CONTAINER
+                  </button>
+                  <button
+                    type="button"
+                    className={deployTab === "compose" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                    onClick={() => setDeployTab("compose")}
+                  >
+                    DOCKER COMPOSE
+                  </button>
+                </div>
+                {deployTab === "container" && (
+                  <>
                 {(() => {
                   const activeContainers = containers.data?.desired.filter((d) => {
                     if (d.status !== "absent") return true;
@@ -633,9 +653,10 @@ export function AgentDetail() {
                   </button>
                 </form>
                 {deployContainer.isError && <div className="alert-row">{(deployContainer.error as Error).message}</div>}
-              </div>
-              <div style={{ marginBottom: 24 }}>
-                <div className="eyebrow" style={{ marginBottom: 10 }}>COMPOSE STACKS</div>
+                  </>
+                )}
+                {deployTab === "compose" && (
+                  <>
                 {(() => {
                   const activeCompose = composeStacks.data?.desired.filter((d) => {
                     if (d.status !== "absent") return true;
@@ -800,6 +821,8 @@ export function AgentDetail() {
                   </button>
                 </form>
                 {deployComposeStack.isError && <div className="alert-row">{(deployComposeStack.error as Error).message}</div>}
+                  </>
+                )}
               </div>
 
               <div>
