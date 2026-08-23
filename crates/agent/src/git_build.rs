@@ -19,13 +19,27 @@ pub enum BuildError {
     Build(String),
 }
 
+fn sanitize_docker_identifier(s: &str) -> String {
+    let sanitized: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .collect();
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "container".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// One fixed tag per logical container name — no need for per-build
 /// uniqueness since `ContainerManager::try_deploy` already force-removes
 /// any existing container by this name before recreating, and v1
 /// deliberately does a full rebuild on every deploy rather than caching
 /// across them.
 fn tag_for(logical_name: &str) -> String {
-    format!("harbory-build-{logical_name}:latest")
+    let slug = sanitize_docker_identifier(logical_name).to_ascii_lowercase();
+    format!("harbory-build-{slug}:latest")
 }
 
 /// Builds `source` and returns the local image tag it was built as. The

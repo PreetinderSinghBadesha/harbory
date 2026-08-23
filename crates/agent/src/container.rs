@@ -49,8 +49,22 @@ pub struct ContainerManager {
     errors: Mutex<HashMap<String, String>>,
 }
 
+fn sanitize_docker_identifier(s: &str) -> String {
+    let sanitized: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .collect();
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "container".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn docker_name(logical_name: &str) -> String {
-    format!("harbory-{logical_name}")
+    let slug = sanitize_docker_identifier(logical_name);
+    format!("harbory-{slug}")
 }
 
 impl ContainerManager {
