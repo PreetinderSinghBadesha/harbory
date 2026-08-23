@@ -321,7 +321,7 @@ export function AgentDetail() {
   const [composeSelectedRepo, setComposeSelectedRepo] = useState("");
   const [composeGitRef, setComposeGitRef] = useState("");
   const [composeFilePath, setComposeFilePath] = useState("");
-  const [composeEnvVars, setComposeEnvVars] = useState("");
+  const [composeEnvVars, setComposeEnvVars] = useState<{ key: string; value: string }[]>([]);
 
   const deployComposeStack = useMutation({
     mutationFn: () =>
@@ -332,9 +332,8 @@ export function AgentDetail() {
           git_ref: composeGitRef,
           compose_file_path: composeFilePath,
           env: composeEnvVars
-            .split("\n")
-            .map((s) => s.trim())
-            .filter(Boolean),
+            .filter((e) => e.key.trim() !== "")
+            .map((e) => `${e.key.trim()}=${e.value.trim()}`),
         }),
       }),
     onSuccess: () => {
@@ -343,7 +342,7 @@ export function AgentDetail() {
       setComposeSelectedRepo("");
       setComposeGitRef("");
       setComposeFilePath("");
-      setComposeEnvVars("");
+      setComposeEnvVars([]);
     },
   });
 
@@ -738,18 +737,54 @@ export function AgentDetail() {
                         value={composeFilePath}
                         onChange={(e) => setComposeFilePath(e.target.value)}
                       />
-                      <textarea
-                        placeholder="environment variables (VAR=value, one per line)"
-                        value={composeEnvVars}
-                        onChange={(e) => setComposeEnvVars(e.target.value)}
-                        rows={2}
-                        style={{
-                          fontFamily: "monospace",
-                          fontSize: 11,
-                          padding: "6px 8px",
-                          width: "250px",
-                        }}
-                      />
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
+                        <div className="eyebrow" style={{ fontSize: 10 }}>ENVIRONMENT VARIABLES</div>
+                        {composeEnvVars.map((env, i) => (
+                          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            <input
+                              placeholder="VAR"
+                              value={env.key}
+                              onChange={(e) => {
+                                const next = [...composeEnvVars];
+                                next[i].key = e.target.value;
+                                setComposeEnvVars(next);
+                              }}
+                              style={{ width: 120 }}
+                            />
+                            <span className="mono" style={{ color: "#888" }}>=</span>
+                            <input
+                              placeholder="value"
+                              value={env.value}
+                              onChange={(e) => {
+                                const next = [...composeEnvVars];
+                                next[i].value = e.target.value;
+                                setComposeEnvVars(next);
+                              }}
+                              style={{ width: 160 }}
+                            />
+                            <button
+                              type="button"
+                              className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                              onClick={() => {
+                                const next = [...composeEnvVars];
+                                next.splice(i, 1);
+                                setComposeEnvVars(next);
+                              }}
+                              style={{ fontSize: 10, padding: "2px 6px" }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                          onClick={() => setComposeEnvVars([...composeEnvVars, { key: "", value: "" }])}
+                          style={{ alignSelf: "flex-start", marginTop: 4 }}
+                        >
+                          + ADD VARIABLE
+                        </button>
+                      </div>
                     </>
                   ) : (
                     <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
