@@ -21,3 +21,4 @@ thiserror = { workspace = true }
 # out to the `docker` CLI: typed responses, no parsing subprocess output.
 bollard = "0.17"
 tempfile = "3.27.0"
+serde_json.workspace = true

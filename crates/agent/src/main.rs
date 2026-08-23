@@ -1,4 +1,5 @@
 mod backoff;
+mod compose;
 mod container;
 mod git_build;
 mod proxy;
@@ -50,6 +51,9 @@ async fn main() -> anyhow::Result<()> {
     // binary is container management, so a missing/unreachable Docker
     // daemon is a startup error, not a background warning.
     let containers = ContainerManager::connect()?;
+    
+    // Similarly, a compose manager for Docker Compose stacks.
+    let compose = crate::compose::ComposeManager::new();
 
     // Unlike Docker, nginx is not required at startup — a host might
     // legitimately run only containers and never get a proxy route
@@ -66,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     // credential and identity, per the security model.
     let mut backoff = Backoff::default();
     loop {
-        match stream::run_stream(&control_plane_addr, &identity, &credential, &containers, &proxy).await {
+        match stream::run_stream(&control_plane_addr, &identity, &credential, &containers, &compose, &proxy).await {
             Ok(()) => backoff.reset(),
             Err(err) => {
                 let delay = backoff.next_delay();

@@ -8,6 +8,7 @@
 
 use bollard::Docker;
 use harbory_protocol::v1::GitSource;
+use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -40,28 +41,14 @@ fn tag_for(logical_name: &str) -> String {
     format!("harbory-build-{slug}:latest")
 }
 
-/// Builds `source` and returns the local image tag it was built as. The
-/// credential (if any) for a private repo is expected to already be
-/// embedded in `source.repo_url` by the caller (the control plane does
-/// this only in the wire message it sends, never in what it persists) —
-/// this function doesn't know or care whether the repo is public or
-/// private.
-pub async fn build(_docker: &Docker, logical_name: &str, source: &GitSource) -> Result<String, BuildError> {
-    let tag = tag_for(logical_name);
-    let dockerfile = if source.dockerfile_path.is_empty() { "Dockerfile" } else { source.dockerfile_path.as_str() };
-    
-    let remote = if source.git_ref.is_empty() {
-        source.repo_url.clone()
-    } else {
-        source.repo_url.clone() // Clone the repo URL, checkout the ref later
-    };
-
-    let temp_dir = tempfile::tempdir_in(".").map_err(|e| BuildError::Build(format!("Failed to create temp dir: {}", e)))?;
-    let repo_dir = temp_dir.path().join("repo");
-
+pub async fn clone_repo(
+    repo_url: &str,
+    git_ref: &str,
+    work_dir: &PathBuf,
+) -> Result<(), BuildError> {
     // 1. Git clone
     let mut clone_cmd = tokio::process::Command::new("git");
-    clone_cmd.arg("clone").arg("--recurse-submodules").arg(&remote).arg(&repo_dir);
+    clone_cmd.arg("clone").arg("--recurse-submodules").arg(repo_url).arg(work_dir);
     
     // Prevent git from asking for interactive credentials
     clone_cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -73,10 +60,10 @@ pub async fn build(_docker: &Docker, logical_name: &str, source: &GitSource) -> 
     }
 
     // 2. Git checkout ref (if specified)
-    if !source.git_ref.is_empty() {
+    if !git_ref.is_empty() {
         let checkout_output = tokio::process::Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["checkout", &source.git_ref])
+            .current_dir(work_dir)
+            .args(["checkout", git_ref])
             .output()
             .await
             .map_err(|e| BuildError::Build(format!("Failed to execute git checkout: {}", e)))?;
@@ -86,6 +73,24 @@ pub async fn build(_docker: &Docker, logical_name: &str, source: &GitSource) -> 
             return Err(BuildError::Build(format!("Git checkout failed:\n{}", stderr)));
         }
     }
+
+    Ok(())
+}
+
+/// Builds `source` and returns the local image tag it was built as. The
+/// credential (if any) for a private repo is expected to already be
+/// embedded in `source.repo_url` by the caller (the control plane does
+/// this only in the wire message it sends, never in what it persists) —
+/// this function doesn't know or care whether the repo is public or
+/// private.
+pub async fn build(_docker: &Docker, logical_name: &str, source: &GitSource) -> Result<String, BuildError> {
+    let tag = tag_for(logical_name);
+    let dockerfile = if source.dockerfile_path.is_empty() { "Dockerfile" } else { source.dockerfile_path.as_str() };
+    
+    let temp_dir = tempfile::tempdir_in(".").map_err(|e| BuildError::Build(format!("Failed to create temp dir: {}", e)))?;
+    let repo_dir = temp_dir.path().join("repo");
+
+    clone_repo(&source.repo_url, &source.git_ref, &repo_dir).await?;
 
     // 3. Docker build
     let output = tokio::process::Command::new("docker")

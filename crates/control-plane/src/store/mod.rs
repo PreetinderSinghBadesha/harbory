@@ -1,6 +1,7 @@
 mod accounts;
 mod agents;
 mod audit;
+mod compose;
 mod containers;
 mod github;
 mod pairing;
@@ -9,6 +10,7 @@ mod registration;
 
 pub use agents::AgentRecord;
 pub use audit::{AuditEventRecord, AuditEventType};
+pub use compose::{ComposeStore, DesiredComposeStack, ObservedComposeStack};
 pub use github::{ConsumeStateError, GitHubConnectionRecord, IssuedOAuthState};
 pub use pairing::IssuedPairingToken;
 pub use registration::{RegisterError, RegisterOutcome, VerifyCredentialError};
@@ -21,12 +23,14 @@ use sqlx::PgPool;
 #[derive(Clone)]
 pub struct Store {
     pub(crate) pool: PgPool,
+    pub compose: ComposeStore,
 }
 
 impl Store {
     pub async fn connect(database_url: &str) -> Result<Self, sqlx::Error> {
         let pool = PgPool::connect(database_url).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        Ok(Self { pool })
+        let compose = ComposeStore::new(pool.clone());
+        Ok(Self { pool, compose })
     }
 }

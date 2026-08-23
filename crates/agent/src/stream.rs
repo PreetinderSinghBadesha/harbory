@@ -33,6 +33,15 @@ async fn send_state_report(tx: &mpsc::Sender<AgentMessage>, containers: &Contain
     Ok(())
 }
 
+async fn send_compose_state_report(tx: &mpsc::Sender<AgentMessage>, compose: &crate::compose::ComposeManager) -> anyhow::Result<()> {
+    let stacks = compose.list_state().await?;
+    tx.send(AgentMessage {
+        payload: Some(harbory_protocol::v1::agent_message::Payload::ComposeStateReport(harbory_protocol::v1::ComposeStateReport { stacks })),
+    })
+    .await?;
+    Ok(())
+}
+
 async fn send_proxy_state_report(tx: &mpsc::Sender<AgentMessage>, state: &ProxyReportState) -> anyhow::Result<()> {
     tx.send(AgentMessage {
         payload: Some(harbory_protocol::v1::agent_message::Payload::ProxyState(ProxyState {
@@ -54,6 +63,7 @@ pub async fn run_stream(
     identity: &Keypair,
     credential: &[u8],
     containers: &ContainerManager,
+    compose: &crate::compose::ComposeManager,
     proxy: &ProxyManager,
 ) -> anyhow::Result<()> {
     let channel = crate::transport::connect(control_plane_addr).await?;
@@ -112,6 +122,9 @@ pub async fn run_stream(
     if let Err(err) = send_state_report(&tx, containers).await {
         tracing::warn!(%err, "failed to send initial container state report");
     }
+    if let Err(err) = send_compose_state_report(&tx, compose).await {
+        tracing::warn!(%err, "failed to send initial compose state report");
+    }
     if let Err(err) = send_proxy_state_report(&tx, &proxy_state).await {
         tracing::warn!(%err, "failed to send initial proxy state report");
     }
@@ -154,6 +167,13 @@ pub async fn run_stream(
                                 if execute_command(containers, cmd).await {
                                     if let Err(err) = send_state_report(&tx, containers).await {
                                         tracing::warn!(%err, "failed to send post-command container state report");
+                                    }
+                                }
+                            }
+                            Some(ControlPlanePayload::ComposeCommand(cmd)) => {
+                                if execute_compose_command(compose, cmd).await {
+                                    if let Err(err) = send_compose_state_report(&tx, compose).await {
+                                        tracing::warn!(%err, "failed to send post-command compose state report");
                                     }
                                 }
                             }
@@ -233,6 +253,30 @@ async fn execute_command(containers: &ContainerManager, cmd: harbory_protocol::v
         }
         None => {
             tracing::debug!("received ContainerCommand with no action set");
+            false
+        }
+    }
+}
+
+async fn execute_compose_command(compose: &crate::compose::ComposeManager, cmd: harbory_protocol::v1::ComposeCommand) -> bool {
+    match cmd.action {
+        Some(harbory_protocol::v1::compose_command::Action::Deploy(spec)) => {
+            tracing::info!(name = %spec.name, "deploying compose stack");
+            match compose.deploy(&spec).await {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!(name = %spec.name, %err, "failed to deploy compose stack");
+                    false
+                }
+            }
+        }
+        Some(harbory_protocol::v1::compose_command::Action::Remove(name)) => {
+            tracing::info!(%name, "removing compose stack");
+            let _ = compose.remove(&name).await;
+            true
+        }
+        None => {
+            tracing::debug!("received ComposeCommand with no action set");
             false
         }
     }

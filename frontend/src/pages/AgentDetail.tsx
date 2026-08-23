@@ -30,6 +30,23 @@ interface ContainersResponse {
   observed: ObservedContainer[];
 }
 
+interface DesiredComposeStack {
+  name: string;
+  status: string;
+  source: { repo_url: string; git_ref: string; dockerfile_path: string } | null;
+  compose_file_path: string;
+}
+interface ObservedComposeStack {
+  name: string;
+  status: string;
+  error?: string | null;
+}
+interface ComposeStacksResponse {
+  desired: DesiredComposeStack[];
+  observed: ObservedComposeStack[];
+}
+
+
 interface ProxyRoute {
   name: string;
   server_name: string;
@@ -293,6 +310,41 @@ export function AgentDetail() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["containers", agentId] }),
   });
 
+  const composeStacks = useQuery({
+    queryKey: ["compose-stacks", agentId],
+    queryFn: () => apiFetch<ComposeStacksResponse>(`/agents/${agentId}/compose-stacks`),
+    refetchInterval: 5000,
+  });
+
+  const [composeName, setComposeName] = useState("");
+  const [composeSelectedRepo, setComposeSelectedRepo] = useState("");
+  const [composeGitRef, setComposeGitRef] = useState("");
+  const [composeFilePath, setComposeFilePath] = useState("");
+
+  const deployComposeStack = useMutation({
+    mutationFn: () =>
+      apiFetch<void>(`/agents/${agentId}/compose-stacks/${encodeURIComponent(composeName)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          source: { repo_url: repoUrlFor(composeSelectedRepo), git_ref: composeGitRef, dockerfile_path: "" },
+          compose_file_path: composeFilePath,
+        }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["compose-stacks", agentId] });
+      setComposeName("");
+      setComposeSelectedRepo("");
+      setComposeGitRef("");
+      setComposeFilePath("");
+    },
+  });
+
+  const removeComposeStack = useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<void>(`/agents/${agentId}/compose-stacks/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["compose-stacks", agentId] }),
+  });
+
   const [routeName, setRouteName] = useState("");
   const [serverName, setServerName] = useState("");
   const [listenPort, setListenPort] = useState(80);
@@ -323,6 +375,10 @@ export function AgentDetail() {
   function handleDeployContainer(e: FormEvent) {
     e.preventDefault();
     deployContainer.mutate();
+  }
+  function handleDeployComposeStack(e: FormEvent) {
+    e.preventDefault();
+    deployComposeStack.mutate();
   }
   function handleDeployRoute(e: FormEvent) {
     e.preventDefault();
@@ -570,6 +626,125 @@ export function AgentDetail() {
                   </button>
                 </form>
                 {deployContainer.isError && <div className="alert-row">{(deployContainer.error as Error).message}</div>}
+              </div>
+              <div style={{ marginBottom: 24 }}>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>COMPOSE STACKS</div>
+                {(() => {
+                  const activeCompose = composeStacks.data?.desired.filter((d) => {
+                    if (d.status !== "absent") return true;
+                    const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
+                    return observed && observed.status !== "removed";
+                  });
+                  if (!activeCompose || activeCompose.length === 0) return null;
+                  return (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>NAME</th>
+                          <th>SOURCE</th>
+                          <th>DESIRED</th>
+                          <th>OBSERVED</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeCompose.map((d) => {
+                          const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
+                          const isAbsent = d.status === "absent";
+                          return (
+                            <tr key={d.name}>
+                              <td>{d.name}</td>
+                              <td>
+                                {d.source ? (
+                                  <>
+                                    <span className="badge" style={{ background: "#E9F4FF", color: "var(--blue)", borderColor: "var(--blue)", marginRight: 6 }}>
+                                      GITHUB
+                                    </span>
+                                    {d.source.repo_url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "")}
+                                    {d.source.git_ref && `@${d.source.git_ref}`}
+                                    {d.compose_file_path && ` (file: ${d.compose_file_path})`}
+                                  </>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                              <td>
+                                <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
+                              </td>
+                              <td>
+                                {observed ? (
+                                  <div>
+                                    <StatusBadge status={observed.status} />
+                                    {observed.error && (
+                                      <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
+                                        ⚠ {observed.error}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                              <td>
+                                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                  <button
+                                    type="button"
+                                    className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                                    onClick={() => removeComposeStack.mutate(d.name)}
+                                    disabled={removeComposeStack.isPending || isAbsent}
+                                  >
+                                    {isAbsent ? "REMOVING…" : "REMOVE"}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  );
+                })()}
+
+                <form onSubmit={handleDeployComposeStack} className="inline-form" style={{ marginTop: 14 }}>
+                  <input placeholder="stack name" value={composeName} onChange={(e) => setComposeName(e.target.value)} required />
+                  {github.data && github.data.repos.length > 0 ? (
+                    <>
+                      <select value={composeSelectedRepo} onChange={(e) => setComposeSelectedRepo(e.target.value)} required>
+                        <option value="" disabled>
+                          select a repo…
+                        </option>
+                        {github.data.repos.map((r) => (
+                          <option key={r.full_name} value={r.full_name}>
+                            {r.full_name}
+                            {r.private ? " (private)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        placeholder="branch (default: repo's default branch)"
+                        value={composeGitRef}
+                        onChange={(e) => setComposeGitRef(e.target.value)}
+                      />
+                      <input
+                        placeholder="compose file (default: docker-compose.yml)"
+                        value={composeFilePath}
+                        onChange={(e) => setComposeFilePath(e.target.value)}
+                      />
+                    </>
+                  ) : (
+                    <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
+                      {github.isLoading ? "Loading repos…" : "Connect a GitHub account from the dashboard first."}
+                    </p>
+                  )}
+                  <button
+                    type="submit"
+                    className="pixel-btn pixel-btn-sm"
+                    disabled={deployComposeStack.isPending || !github.data?.repos.length}
+                  >
+                    DEPLOY COMPOSE STACK
+                  </button>
+                </form>
+                {deployComposeStack.isError && <div className="alert-row">{(deployComposeStack.error as Error).message}</div>}
               </div>
 
               <div>

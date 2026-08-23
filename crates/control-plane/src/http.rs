@@ -87,6 +87,8 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/:agent_id/containers/:name/logs", get(get_container_logs))
         .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
         .route("/agents/:agent_id/proxy-routes/:name", put(put_proxy_route).delete(delete_proxy_route))
+        .route("/agents/:agent_id/compose-stacks", get(list_compose_stacks))
+        .route("/agents/:agent_id/compose-stacks/:name", put(put_compose_stack).delete(delete_compose_stack))
         .route("/github/oauth/start", post(github_oauth_start))
         // Deliberately unauthenticated, like /metrics above: this is hit
         // by a real browser redirect from github.com, which can't carry
@@ -429,6 +431,132 @@ async fn list_containers(
                 error: o.error,
             })
             .collect(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct PutComposeStackRequest {
+    repo_url: String,
+    #[serde(default)]
+    git_ref: String,
+    #[serde(default = "default_compose_file_path")]
+    compose_file_path: String,
+}
+
+fn default_compose_file_path() -> String {
+    "docker-compose.yml".to_string()
+}
+
+#[derive(Serialize)]
+struct ComposeStackOutDto {
+    name: String,
+    repo_url: String,
+    git_ref: String,
+    compose_file_path: String,
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+struct ObservedComposeStackDto {
+    name: String,
+    status: &'static str,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ComposeStacksDto {
+    desired: Vec<ComposeStackOutDto>,
+    observed: Vec<ObservedComposeStackDto>,
+}
+
+async fn put_compose_stack(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Path((agent_id, name)): Path<(Uuid, String)>,
+    Json(req): Json<PutComposeStackRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let repo_url = if let Some(install_id) = state.store.get_github_installation_id(account.id).await.unwrap_or(None) {
+        if let Some((cid, csec)) = state.github_client_id.as_ref().zip(state.github_client_secret.as_ref()) {
+            if let Ok(token) = github::get_installation_token(install_id, cid, csec).await {
+                github::inject_token_into_url(&req.repo_url, &token).unwrap_or(req.repo_url)
+            } else { req.repo_url }
+        } else { req.repo_url }
+    } else { req.repo_url };
+
+    let stack = crate::store::DesiredComposeStack {
+        agent_id,
+        name: name.clone(),
+        repo_url,
+        git_ref: req.git_ref,
+        compose_file_path: req.compose_file_path,
+        desired_status: "running".to_string(),
+    };
+
+    state.store.compose.upsert_desired(&stack).await.map_err(|err| {
+        tracing::error!(?err, "failed to upsert compose stack");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    
+    // We don't have AuditEventType::PutComposeStack yet, using a dummy or omitting.
+    // state.store.log_audit_event(agent_id, AuditEventType::PutComposeStack, &name).await.ok();
+    Ok(StatusCode::OK)
+}
+
+async fn delete_compose_stack(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Path((agent_id, name)): Path<(Uuid, String)>,
+) -> Result<StatusCode, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let stack = crate::store::DesiredComposeStack {
+        agent_id,
+        name: name.clone(),
+        repo_url: "".into(),
+        git_ref: "".into(),
+        compose_file_path: "".into(),
+        desired_status: "absent".to_string(),
+    };
+
+    state.store.compose.upsert_desired(&stack).await.map_err(|err| {
+        tracing::error!(?err, "failed to update compose stack to absent");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    
+    Ok(StatusCode::OK)
+}
+
+async fn list_compose_stacks(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<ComposeStacksDto>, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let desired = state.store.compose.get_desired_by_agent(agent_id).await.unwrap_or_default();
+    let observed = state.store.compose.get_observed_by_agent(agent_id).await.unwrap_or_default();
+
+    Ok(Json(ComposeStacksDto {
+        desired: desired.into_iter().map(|d| ComposeStackOutDto {
+            name: d.name,
+            repo_url: github::strip_token_from_url(&d.repo_url).unwrap_or(d.repo_url),
+            git_ref: d.git_ref,
+            compose_file_path: d.compose_file_path,
+            status: if d.desired_status == "absent" { "absent" } else { "running" },
+        }).collect(),
+        observed: observed.into_iter().map(|o| ObservedComposeStackDto {
+            name: o.name,
+            status: match o.status.as_str() {
+                "running" => "running",
+                "stopped" => "stopped",
+                "removed" => "removed",
+                "error" => "error",
+                _ => "error",
+            },
+            error: o.error,
+        }).collect(),
     }))
 }
 

@@ -233,6 +233,93 @@ async fn reconcile_and_dispatch(
     true
 }
 
+/// Persists a freshly-reported observed snapshot of compose stacks, diffs it against
+/// desired state, and sends back commands to converge. Returns `false` if connection died.
+async fn reconcile_compose_and_dispatch(
+    store: &Store,
+    agent_id: uuid::Uuid,
+    observed: Vec<crate::reconcile::ObservedComposeStack>,
+    tx: &Outbound,
+) -> bool {
+    if let Err(err) = store.compose.replace_observed(agent_id, &observed.into_iter().map(|o| crate::store::ObservedComposeStack {
+        agent_id,
+        name: o.name,
+        status: match o.status {
+            ObservedStatus::Running => "running".into(),
+            ObservedStatus::Stopped => "stopped".into(),
+            ObservedStatus::Removed => "removed".into(),
+            ObservedStatus::Error => "error".into(),
+        },
+        error: o.error,
+    }).collect::<Vec<_>>()).await {
+        tracing::warn!(%agent_id, ?err, "failed to persist observed compose state");
+        return true;
+    }
+
+    let desired = match store.compose.get_desired_by_agent(agent_id).await {
+        Ok(desired) => desired,
+        Err(err) => {
+            tracing::warn!(%agent_id, ?err, "failed to load desired compose state");
+            return true;
+        }
+    };
+
+    let desired_mapped = desired.into_iter().map(|d| crate::reconcile::DesiredComposeStack {
+        name: d.name,
+        git_source: crate::reconcile::GitSource {
+            repo_url: d.repo_url,
+            git_ref: d.git_ref,
+            dockerfile_path: "".into(),
+        },
+        compose_file_path: d.compose_file_path,
+        status: match d.desired_status.as_str() {
+            "running" => DesiredStatus::Running,
+            _ => DesiredStatus::Absent,
+        },
+    }).collect::<Vec<_>>();
+
+    let observed_mapped = match store.compose.get_observed_by_agent(agent_id).await {
+        Ok(obs) => obs.into_iter().map(|o| crate::reconcile::ObservedComposeStack {
+            name: o.name,
+            status: match o.status.as_str() {
+                "running" => ObservedStatus::Running,
+                "stopped" => ObservedStatus::Stopped,
+                "removed" => ObservedStatus::Removed,
+                "error" => ObservedStatus::Error,
+                _ => ObservedStatus::Error,
+            },
+            error: o.error,
+        }).collect::<Vec<_>>(),
+        Err(_) => vec![],
+    };
+
+    for command in reconcile::diff_compose_stacks(&desired_mapped, &observed_mapped) {
+        let proto_cmd = match command {
+            crate::reconcile::ComposeCommand::Deploy(d) => {
+                let git_source = resolve_git_source(store, agent_id, d.git_source).await;
+                harbory_protocol::v1::compose_command::Action::Deploy(harbory_protocol::v1::ComposeSpec {
+                    name: d.name,
+                    git_source: Some(harbory_protocol::v1::GitSource {
+                        repo_url: git_source.repo_url,
+                        git_ref: git_source.git_ref,
+                        dockerfile_path: git_source.dockerfile_path,
+                    }),
+                    compose_file_path: d.compose_file_path,
+                })
+            }
+            crate::reconcile::ComposeCommand::Remove(name) => {
+                harbory_protocol::v1::compose_command::Action::Remove(name)
+            }
+        };
+
+        let msg = harbory_protocol::v1::ComposeCommand { action: Some(proto_cmd) };
+        if tx.send(frame(ControlPlanePayload::ComposeCommand(msg))).await.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
 /// Persists what the agent reports it has applied, and — if that doesn't
 /// match the hash of current desired state — sends the full desired route
 /// set back down. Same "converge on report, not on instant push" pattern
@@ -391,6 +478,22 @@ async fn drive_connection(
             Some(Ok(AgentMessage { payload: Some(AgentPayload::StateReport(report)) })) => {
                 let observed: Vec<ObservedContainer> = report.containers.into_iter().map(observed_from_proto).collect();
                 if !reconcile_and_dispatch(&store, agent_id, observed, &tx).await {
+                    break;
+                }
+            }
+            Some(Ok(AgentMessage { payload: Some(AgentPayload::ComposeStateReport(report)) })) => {
+                let observed: Vec<crate::reconcile::ObservedComposeStack> = report.stacks.into_iter().map(|s| crate::reconcile::ObservedComposeStack {
+                    name: s.name,
+                    status: match s.status {
+                        1 => ObservedStatus::Running,
+                        2 => ObservedStatus::Stopped,
+                        3 => ObservedStatus::Removed,
+                        4 => ObservedStatus::Error,
+                        _ => ObservedStatus::Error,
+                    },
+                    error: if s.error.is_empty() { None } else { Some(s.error) },
+                }).collect();
+                if !reconcile_compose_and_dispatch(&store, agent_id, observed, &tx).await {
                     break;
                 }
             }

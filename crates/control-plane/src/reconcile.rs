@@ -58,6 +58,29 @@ pub struct ObservedContainer {
     pub error: Option<String>,
 }
 
+// --- Compose Stacks ---
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesiredComposeStack {
+    pub name: String,
+    pub git_source: GitSource,
+    pub compose_file_path: String,
+    pub status: DesiredStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedComposeStack {
+    pub name: String,
+    pub status: ObservedStatus,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComposeCommand {
+    Deploy(DesiredComposeStack),
+    Remove(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Create-or-replace, idempotent: the agent is expected to remove any
@@ -103,6 +126,42 @@ pub fn diff(desired: &[DesiredContainer], observed: &[ObservedContainer]) -> Vec
     // it alone rather than guess it should be removed.
 
     actions
+}
+
+pub fn diff_compose_stacks(desired: &[DesiredComposeStack], observed: &[ObservedComposeStack]) -> Vec<ComposeCommand> {
+    let mut commands = Vec::new();
+
+    for d in desired {
+        let o = observed.iter().find(|o| o.name == d.name);
+
+        match d.status {
+            DesiredStatus::Running => {
+                if let Some(obs) = o {
+                    if obs.status != ObservedStatus::Running {
+                        commands.push(ComposeCommand::Deploy(d.clone()));
+                    } else {
+                        // For Compose, "running" means up-to-date with the git ref.
+                        // We do not have a robust way to diff the full stack configuration
+                        // purely from observed status (since `docker compose ps` doesn't
+                        // expose the exact sha deployed in a reliable way easily). 
+                        // In v1, we assume if it's Running, it's correct. 
+                        // To trigger an update, the user relies on webhooks or manual deploy.
+                    }
+                } else {
+                    commands.push(ComposeCommand::Deploy(d.clone()));
+                }
+            }
+            DesiredStatus::Absent => {
+                if let Some(obs) = o {
+                    if obs.status != ObservedStatus::Removed {
+                        commands.push(ComposeCommand::Remove(d.name.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    commands
 }
 
 #[cfg(test)]
