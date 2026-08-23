@@ -48,6 +48,10 @@ impl ComposeManager {
             crate::git_build::clone_repo(&git_source.repo_url, &git_source.git_ref, &work_dir).await?;
         }
 
+        // Write .env file
+        let env_content = spec.env.join("\n");
+        tokio::fs::write(work_dir.join(".env"), env_content).await?;
+
         // 2. Run docker compose up -d
         tracing::info!(name = %spec.name, "running docker compose up -d");
         

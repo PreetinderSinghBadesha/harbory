@@ -8,6 +8,7 @@ pub struct DesiredComposeStack {
     pub repo_url: String,
     pub git_ref: String,
     pub compose_file_path: String,
+    pub env: Vec<String>,
     pub desired_status: String,
 }
 
@@ -32,12 +33,13 @@ impl ComposeStore {
     pub async fn upsert_desired(&self, stack: &DesiredComposeStack) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO desired_compose_stacks (agent_id, name, repo_url, git_ref, compose_file_path, desired_status)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO desired_compose_stacks (agent_id, name, repo_url, git_ref, compose_file_path, env, desired_status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (agent_id, name) DO UPDATE SET
                 repo_url = EXCLUDED.repo_url,
                 git_ref = EXCLUDED.git_ref,
                 compose_file_path = EXCLUDED.compose_file_path,
+                env = EXCLUDED.env,
                 desired_status = EXCLUDED.desired_status,
                 updated_at = now()
             "#,
@@ -47,6 +49,7 @@ impl ComposeStore {
         .bind(&stack.repo_url)
         .bind(&stack.git_ref)
         .bind(&stack.compose_file_path)
+        .bind(&stack.env)
         .bind(&stack.desired_status)
         .execute(&self.pool)
         .await?;
@@ -56,7 +59,7 @@ impl ComposeStore {
     pub async fn get_desired_by_agent(&self, agent_id: Uuid) -> Result<Vec<DesiredComposeStack>> {
         sqlx::query_as::<_, DesiredComposeStack>(
             r#"
-            SELECT agent_id, name, repo_url, git_ref, compose_file_path, desired_status
+            SELECT agent_id, name, repo_url, git_ref, compose_file_path, env, desired_status
             FROM desired_compose_stacks
             WHERE agent_id = $1
             "#,

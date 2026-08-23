@@ -441,6 +441,8 @@ struct PutComposeStackRequest {
     git_ref: String,
     #[serde(default = "default_compose_file_path")]
     compose_file_path: String,
+    #[serde(default)]
+    env: Vec<String>,
 }
 
 fn default_compose_file_path() -> String {
@@ -453,6 +455,7 @@ struct ComposeStackOutDto {
     repo_url: String,
     git_ref: String,
     compose_file_path: String,
+    env: Vec<String>,
     status: &'static str,
 }
 
@@ -485,6 +488,7 @@ async fn put_compose_stack(
         repo_url,
         git_ref: req.git_ref,
         compose_file_path: req.compose_file_path,
+        env: req.env,
         desired_status: "running".to_string(),
     };
 
@@ -511,6 +515,7 @@ async fn delete_compose_stack(
         repo_url: "".into(),
         git_ref: "".into(),
         compose_file_path: "".into(),
+        env: vec![],
         desired_status: "absent".to_string(),
     };
 
@@ -538,6 +543,7 @@ async fn list_compose_stacks(
             repo_url: d.repo_url,
             git_ref: d.git_ref,
             compose_file_path: d.compose_file_path,
+            env: d.env,
             status: if d.desired_status == "absent" { "absent" } else { "running" },
         }).collect(),
         observed: observed.into_iter().map(|o| ObservedComposeStackDto {

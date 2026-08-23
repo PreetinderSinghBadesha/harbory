@@ -187,6 +187,7 @@ message ComposeSpec {
   string name = 1;
   GitSource git_source = 2; // Always deployed from a repo
   string compose_file_path = 3; // Path to compose file (default: docker-compose.yml)
+  repeated string env = 4;
 }
 
 message ComposeCommand {

@@ -35,6 +35,7 @@ interface DesiredComposeStack {
   status: string;
   source: { repo_url: string; git_ref: string; dockerfile_path: string } | null;
   compose_file_path: string;
+  env: string[];
 }
 interface ObservedComposeStack {
   name: string;
@@ -320,6 +321,7 @@ export function AgentDetail() {
   const [composeSelectedRepo, setComposeSelectedRepo] = useState("");
   const [composeGitRef, setComposeGitRef] = useState("");
   const [composeFilePath, setComposeFilePath] = useState("");
+  const [composeEnvVars, setComposeEnvVars] = useState("");
 
   const deployComposeStack = useMutation({
     mutationFn: () =>
@@ -329,6 +331,10 @@ export function AgentDetail() {
           repo_url: repoUrlFor(composeSelectedRepo),
           git_ref: composeGitRef,
           compose_file_path: composeFilePath,
+          env: composeEnvVars
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean),
         }),
       }),
     onSuccess: () => {
@@ -337,6 +343,7 @@ export function AgentDetail() {
       setComposeSelectedRepo("");
       setComposeGitRef("");
       setComposeFilePath("");
+      setComposeEnvVars("");
     },
   });
 
@@ -730,6 +737,18 @@ export function AgentDetail() {
                         placeholder="compose file (default: docker-compose.yml)"
                         value={composeFilePath}
                         onChange={(e) => setComposeFilePath(e.target.value)}
+                      />
+                      <textarea
+                        placeholder="environment variables (VAR=value, one per line)"
+                        value={composeEnvVars}
+                        onChange={(e) => setComposeEnvVars(e.target.value)}
+                        rows={2}
+                        style={{
+                          fontFamily: "monospace",
+                          fontSize: 11,
+                          padding: "6px 8px",
+                          width: "250px",
+                        }}
                       />
                     </>
                   ) : (

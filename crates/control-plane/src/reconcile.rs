@@ -65,6 +65,7 @@ pub struct DesiredComposeStack {
     pub name: String,
     pub git_source: GitSource,
     pub compose_file_path: String,
+    pub env: Vec<String>,
     pub status: DesiredStatus,
 }
 

@@ -272,6 +272,7 @@ async fn reconcile_compose_and_dispatch(
             dockerfile_path: "".into(),
         },
         compose_file_path: d.compose_file_path,
+        env: d.env,
         status: match d.desired_status.as_str() {
             "running" => crate::reconcile::DesiredStatus::Running,
             _ => crate::reconcile::DesiredStatus::Absent,
@@ -305,6 +306,7 @@ async fn reconcile_compose_and_dispatch(
                         dockerfile_path: git_source.dockerfile_path,
                     }),
                     compose_file_path: d.compose_file_path,
+                    env: d.env,
                 })
             }
             crate::reconcile::ComposeCommand::Remove(name) => {
