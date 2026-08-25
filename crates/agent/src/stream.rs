@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use harbory_common::keypair::Keypair;
@@ -18,7 +19,10 @@ use crate::proxy::ProxyManager;
 /// What this agent believes it has last (successfully or not) applied to
 /// Nginx — compared against the control plane's desired-state hash to
 /// decide whether a fresh `ProxyConfig` is needed. Reset fresh on every
-/// reconnect, same as everything else in `run_stream`'s scope.
+/// reconnect, same as everything else in `run_stream`'s scope. Shared
+/// because applies now run off-loop (see below).
+type SharedProxyState = Arc<tokio::sync::Mutex<ProxyReportState>>;
+
 struct ProxyReportState {
     applied_hash: Vec<u8>,
     last_error: Option<String>,
@@ -42,11 +46,15 @@ async fn send_compose_state_report(tx: &mpsc::Sender<AgentMessage>, compose: &cr
     Ok(())
 }
 
-async fn send_proxy_state_report(tx: &mpsc::Sender<AgentMessage>, state: &ProxyReportState) -> anyhow::Result<()> {
+async fn send_proxy_state_report(tx: &mpsc::Sender<AgentMessage>, state: &SharedProxyState) -> anyhow::Result<()> {
+    let (applied_hash, last_error) = {
+        let st = state.lock().await;
+        (st.applied_hash.clone(), st.last_error.clone())
+    };
     tx.send(AgentMessage {
         payload: Some(harbory_protocol::v1::agent_message::Payload::ProxyState(ProxyState {
-            applied_hash: state.applied_hash.clone(),
-            error: state.last_error.clone().unwrap_or_default(),
+            applied_hash,
+            error: last_error.unwrap_or_default(),
         })),
     })
     .await?;
@@ -58,13 +66,21 @@ async fn send_proxy_state_report(tx: &mpsc::Sender<AgentMessage>, state: &ProxyR
 /// Returns on any disconnect (including a clean server-side close) so the
 /// caller can apply reconnect backoff — this function itself has no retry
 /// logic, by design, to keep it testable/composable.
+///
+/// Command handling runs on spawned tasks rather than inline: a
+/// git-sourced deploy can take minutes (clone + full image build), and
+/// blocking the loop for that long would stall heartbeats — making the
+/// agent look offline mid-deploy — and leave log requests and any other
+/// commands unanswered until the build finished. Spawning keeps the loop
+/// ticking; per-resource apply serialization is handled by the managers
+/// themselves (ProxyManager's lock, Docker daemon ordering).
 pub async fn run_stream(
     control_plane_addr: &str,
     identity: &Keypair,
     credential: &[u8],
-    containers: &ContainerManager,
-    compose: &crate::compose::ComposeManager,
-    proxy: &ProxyManager,
+    containers: Arc<ContainerManager>,
+    compose: Arc<crate::compose::ComposeManager>,
+    proxy: Arc<ProxyManager>,
 ) -> anyhow::Result<()> {
     let channel = crate::transport::connect(control_plane_addr).await?;
     let mut client = AgentStreamServiceClient::new(channel);
@@ -114,15 +130,16 @@ pub async fn run_stream(
     // first report always mismatches and the control plane sends whatever
     // it considers desired, even if that's an empty route set. That first
     // round trip establishes a verified baseline.
-    let mut proxy_state = ProxyReportState { applied_hash: Vec::new(), last_error: None };
+    let proxy_state: SharedProxyState =
+        Arc::new(tokio::sync::Mutex::new(ProxyReportState { applied_hash: Vec::new(), last_error: None }));
 
     // Report current state right away so any desired-state changes made
     // while this agent was disconnected converge as soon as possible,
     // rather than waiting for the first periodic tick.
-    if let Err(err) = send_state_report(&tx, containers).await {
+    if let Err(err) = send_state_report(&tx, &containers).await {
         tracing::warn!(%err, "failed to send initial container state report");
     }
-    if let Err(err) = send_compose_state_report(&tx, compose).await {
+    if let Err(err) = send_compose_state_report(&tx, &compose).await {
         tracing::warn!(%err, "failed to send initial compose state report");
     }
     if let Err(err) = send_proxy_state_report(&tx, &proxy_state).await {
@@ -142,7 +159,7 @@ pub async fn run_stream(
                 if tx.send(hb).await.is_err() {
                     anyhow::bail!("outbound channel closed");
                 }
-                if let Err(err) = send_state_report(&tx, containers).await {
+                if let Err(err) = send_state_report(&tx, &containers).await {
                     tracing::warn!(%err, "failed to send periodic container state report");
                 }
                 if let Err(err) = send_proxy_state_report(&tx, &proxy_state).await {
@@ -164,50 +181,70 @@ pub async fn run_stream(
                                 // hard way against a real daemon). Skipping the
                                 // immediate report here means a failure is only
                                 // retried at the periodic cadence instead.
-                                if execute_command(containers, cmd).await {
-                                    if let Err(err) = send_state_report(&tx, containers).await {
-                                        tracing::warn!(%err, "failed to send post-command container state report");
+                                let containers = containers.clone();
+                                let task_tx = tx.clone();
+                                tokio::spawn(async move {
+                                    if execute_command(&containers, cmd).await {
+                                        if let Err(err) = send_state_report(&task_tx, &containers).await {
+                                            tracing::warn!(%err, "failed to send post-command container state report");
+                                        }
                                     }
-                                }
+                                });
                             }
                             Some(ControlPlanePayload::ComposeCommand(cmd)) => {
-                                if execute_compose_command(compose, cmd).await {
-                                    if let Err(err) = send_compose_state_report(&tx, compose).await {
-                                        tracing::warn!(%err, "failed to send post-command compose state report");
+                                let compose = compose.clone();
+                                let task_tx = tx.clone();
+                                tokio::spawn(async move {
+                                    if execute_compose_command(&compose, cmd).await {
+                                        if let Err(err) = send_compose_state_report(&task_tx, &compose).await {
+                                            tracing::warn!(%err, "failed to send post-command compose state report");
+                                        }
                                     }
-                                }
+                                });
                             }
                             Some(ControlPlanePayload::ProxyConfig(cfg)) => {
                                 // Same success-only-immediate-report rule as
                                 // container commands, and for the same reason.
-                                match proxy.apply(&cfg.routes).await {
-                                    Ok(()) => {
-                                        proxy_state.applied_hash = proxy_hash::hash_routes(&cfg.routes).to_vec();
-                                        proxy_state.last_error = None;
-                                        if let Err(err) = send_proxy_state_report(&tx, &proxy_state).await {
-                                            tracing::warn!(%err, "failed to send post-apply proxy state report");
+                                let proxy = proxy.clone();
+                                let task_tx = tx.clone();
+                                let state = proxy_state.clone();
+                                tokio::spawn(async move {
+                                    match proxy.apply(&cfg.routes).await {
+                                        Ok(()) => {
+                                            {
+                                                let mut st = state.lock().await;
+                                                st.applied_hash = proxy_hash::hash_routes(&cfg.routes).to_vec();
+                                                st.last_error = None;
+                                            }
+                                            if let Err(err) = send_proxy_state_report(&task_tx, &state).await {
+                                                tracing::warn!(%err, "failed to send post-apply proxy state report");
+                                            }
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(%err, "failed to apply proxy config");
+                                            state.lock().await.last_error = Some(err.to_string());
                                         }
                                     }
-                                    Err(err) => {
-                                        tracing::warn!(%err, "failed to apply proxy config");
-                                        proxy_state.last_error = Some(err.to_string());
-                                    }
-                                }
+                                });
                             }
                             Some(ControlPlanePayload::LogsRequest(req)) => {
-                                let result = containers.logs(&req.container_name, req.tail_lines).await;
-                                let (logs, error) = match result {
-                                    Ok(text) => (text, String::new()),
-                                    Err(err) => (String::new(), err.to_string()),
-                                };
-                                let resp = AgentMessage {
-                                    payload: Some(harbory_protocol::v1::agent_message::Payload::LogsResponse(
-                                        LogsResponse { request_id: req.request_id, logs, error },
-                                    )),
-                                };
-                                if tx.send(resp).await.is_err() {
-                                    anyhow::bail!("outbound channel closed while sending logs response");
-                                }
+                                let containers = containers.clone();
+                                let task_tx = tx.clone();
+                                tokio::spawn(async move {
+                                    let result = containers.logs(&req.container_name, req.tail_lines).await;
+                                    let (logs, error) = match result {
+                                        Ok(text) => (text, String::new()),
+                                        Err(err) => (String::new(), err.to_string()),
+                                    };
+                                    let resp = AgentMessage {
+                                        payload: Some(harbory_protocol::v1::agent_message::Payload::LogsResponse(
+                                            LogsResponse { request_id: req.request_id, logs, error },
+                                        )),
+                                    };
+                                    if task_tx.send(resp).await.is_err() {
+                                        tracing::warn!("outbound channel closed while sending logs response");
+                                    }
+                                });
                             }
                             _ => {
                                 // HeartbeatAck and anything else: nothing to do.

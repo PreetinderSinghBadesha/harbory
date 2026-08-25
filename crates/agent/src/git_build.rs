@@ -1,10 +1,8 @@
-//! Builds a container image straight from a git repo, using the Docker
-//! daemon's own git-remote build-context support (`BuildImageOptions.remote`
-//! as a git URL) rather than the agent cloning and tarring a context
-//! itself — no `git` binary, no temp directory, no extra dependency. The
-//! daemon (via BuildKit on any reasonably current Docker install) handles
-//! the clone internally, exactly like `docker build <git-url>` from the
-//! CLI does.
+//! Builds a container image from a git repo by shelling out to the host's
+//! `git` and `docker` CLIs: clone into a temp dir, then `docker build` it.
+//! Both binaries are therefore hard requirements for git-sourced deploys —
+//! missing ones surface as a named, actionable error (see spawn_error)
+//! rather than a bare ENOENT.
 
 use bollard::Docker;
 use harbory_protocol::v1::GitSource;
@@ -16,6 +14,21 @@ pub enum BuildError {
     Docker(#[from] bollard::errors::Error),
     #[error("build failed: {0}")]
     Build(String),
+}
+
+/// Turns a spawn failure into something an operator can act on. The
+/// common case is the binary simply not being installed on this host
+/// (`ErrorKind::NotFound` = ENOENT) — a raw "os error 2" gives no hint
+/// which program or what to do about it.
+fn spawn_error(binary: &str, err: std::io::Error) -> BuildError {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        BuildError::Build(format!(
+            "'{binary}' executable not found on this host — git-sourced builds shell out to it. \
+             Install it (e.g. 'sudo apt-get install -y {binary}') and restart harbory-agent."
+        ))
+    } else {
+        BuildError::Build(format!("failed to execute '{binary}': {err}"))
+    }
 }
 
 fn sanitize_docker_identifier(s: &str) -> String {
@@ -49,11 +62,12 @@ pub async fn clone_repo(
     // 1. Git clone
     let mut clone_cmd = tokio::process::Command::new("git");
     clone_cmd.arg("clone").arg("--recurse-submodules").arg(repo_url).arg(work_dir);
-    
+
     // Prevent git from asking for interactive credentials
     clone_cmd.env("GIT_TERMINAL_PROMPT", "0");
-    
-    let clone_output = clone_cmd.output().await.map_err(|e| BuildError::Build(format!("Failed to execute git clone: {}", e)))?;
+
+    let clone_output =
+        clone_cmd.output().await.map_err(|e| spawn_error("git", e))?;
     if !clone_output.status.success() {
         let stderr = String::from_utf8_lossy(&clone_output.stderr);
         return Err(BuildError::Build(format!("Git clone failed:\n{}", stderr)));
@@ -66,7 +80,7 @@ pub async fn clone_repo(
             .args(["checkout", git_ref])
             .output()
             .await
-            .map_err(|e| BuildError::Build(format!("Failed to execute git checkout: {}", e)))?;
+            .map_err(|e| spawn_error("git", e))?;
             
         if !checkout_output.status.success() {
             let stderr = String::from_utf8_lossy(&checkout_output.stderr);
@@ -99,7 +113,7 @@ pub async fn build(_docker: &Docker, logical_name: &str, source: &GitSource) -> 
         .env("DOCKER_BUILDKIT", "1")
         .output()
         .await
-        .map_err(|e| BuildError::Build(format!("Failed to execute docker build: {}", e)))?;
+        .map_err(|e| spawn_error("docker", e))?;
 
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);

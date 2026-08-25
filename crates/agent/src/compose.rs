@@ -40,6 +40,12 @@ impl ComposeManager {
 
     async fn try_deploy(&self, spec: &ComposeSpec) -> Result<(), DeployError> {
         let work_dir = PathBuf::from("/var/lib/harbory-agent").join("compose").join(&spec.name);
+        // Start from a clean slate every deploy: a leftover clone from a
+        // previous deploy makes `git clone` fail ("already exists and is
+        // not an empty directory"), which would break every redeploy.
+        // `up --build` rebuilds everything anyway, so nothing here is
+        // worth keeping across deploys — .env is rewritten below.
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
         tokio::fs::create_dir_all(&work_dir).await?;
 
         // 1. Clone repo if needed
@@ -74,7 +80,16 @@ impl ComposeManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .await?;
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    DeployError::Command(
+                        "'docker' executable not found on this host — install Docker and restart harbory-agent.".into(),
+                    )
+                } else {
+                    DeployError::Io(e)
+                }
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

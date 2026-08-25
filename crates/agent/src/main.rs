@@ -7,6 +7,7 @@ mod stream;
 mod transport;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use harbory_common::keypair::Keypair;
 use harbory_protocol::v1::{pairing_service_client::PairingServiceClient, RegisterRequest};
@@ -49,11 +50,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Fail fast rather than silently degrade: Phase 3's whole job for this
     // binary is container management, so a missing/unreachable Docker
-    // daemon is a startup error, not a background warning.
-    let containers = ContainerManager::connect()?;
-    
+    // daemon is a startup error, not a background warning. Arc'd because
+    // run_stream hands clones to per-command spawned tasks.
+    let containers = Arc::new(ContainerManager::connect()?);
+
     // Similarly, a compose manager for Docker Compose stacks.
-    let compose = crate::compose::ComposeManager::new();
+    let compose = Arc::new(crate::compose::ComposeManager::new());
 
     // Unlike Docker, nginx is not required at startup — a host might
     // legitimately run only containers and never get a proxy route
@@ -63,14 +65,23 @@ async fn main() -> anyhow::Result<()> {
     let nginx_binary = std::env::var("NGINX_BINARY_PATH").unwrap_or_else(|_| "nginx".into());
     let nginx_config_path = std::env::var("NGINX_CONFIG_PATH")
         .unwrap_or_else(|_| "/etc/nginx/conf.d/harbory.conf".into());
-    let proxy = ProxyManager::new(nginx_binary, nginx_config_path);
+    let proxy = Arc::new(ProxyManager::new(nginx_binary, nginx_config_path));
 
     // Transient disconnects (network blips, control-plane restarts) don't
     // require re-pairing — this loop just keeps reusing the stored
     // credential and identity, per the security model.
     let mut backoff = Backoff::default();
     loop {
-        match stream::run_stream(&control_plane_addr, &identity, &credential, &containers, &compose, &proxy).await {
+        match stream::run_stream(
+            &control_plane_addr,
+            &identity,
+            &credential,
+            containers.clone(),
+            compose.clone(),
+            proxy.clone(),
+        )
+        .await
+        {
             Ok(()) => backoff.reset(),
             Err(err) => {
                 let delay = backoff.next_delay();

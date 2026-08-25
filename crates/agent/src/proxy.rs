@@ -109,7 +109,18 @@ impl ProxyManager {
             .args(args)
             .output()
             .await
-            .map_err(|err| format!("failed to run '{}': {err}", self.nginx_binary))?;
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    format!(
+                        "nginx binary '{}' not found on this host — install nginx (or fix NGINX_BINARY_PATH \
+                         in /etc/harbory/agent.env), then restart harbory-agent. Remove this agent's proxy \
+                         routes if it should stay container-only.",
+                        self.nginx_binary
+                    )
+                } else {
+                    format!("failed to run '{}': {err}", self.nginx_binary)
+                }
+            })?;
 
         if output.status.success() {
             Ok(())
