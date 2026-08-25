@@ -1,4 +1,4 @@
-import { useState, useCallback, type FormEvent } from "react";
+import { useState, useEffect, useCallback, type FormEvent, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
@@ -17,6 +17,9 @@ interface DesiredContainer {
   name: string;
   image: string;
   status: string;
+  env?: string[];
+  ports?: { host_port: number; container_port: number }[];
+  command?: string[];
   source: { repo_url: string; git_ref: string; dockerfile_path: string } | null;
 }
 interface ObservedContainer {
@@ -47,7 +50,6 @@ interface ComposeStacksResponse {
   observed: ObservedComposeStack[];
 }
 
-
 interface ProxyRoute {
   name: string;
   server_name: string;
@@ -67,28 +69,65 @@ interface ContainerLogsDto {
   error: string;
 }
 
-interface LogsModalState {
-  containerName: string;
-  agentId: string;
+type DeployTab = "container" | "compose";
+
+type PendingAction =
+  | { kind: "container"; name: string }
+  | { kind: "compose"; name: string }
+  | { kind: "route"; name: string }
+  | { kind: "revoke" };
+
+function confirmCopy(action: PendingAction): { title: string; message: string; confirmLabel: string } {
+  switch (action.kind) {
+    case "container":
+      return {
+        title: "REMOVE CONTAINER",
+        message: `Remove container "${action.name}"? It will be stopped and deleted from the agent on its next heartbeat.`,
+        confirmLabel: "REMOVE",
+      };
+    case "compose":
+      return {
+        title: "REMOVE COMPOSE STACK",
+        message: `Remove compose stack "${action.name}"? All of its containers will be stopped and removed on the agent's next heartbeat.`,
+        confirmLabel: "REMOVE",
+      };
+    case "route":
+      return {
+        title: "REMOVE PROXY ROUTE",
+        message: `Remove proxy route "${action.name}"? Traffic to ${action.name} will stop being proxied after the next heartbeat.`,
+        confirmLabel: "REMOVE",
+      };
+    case "revoke":
+      return {
+        title: "REVOKE AGENT",
+        message: "Revoke this agent? Its access is cut off permanently — you'll need to pair a brand-new agent.",
+        confirmLabel: "REVOKE",
+      };
+  }
 }
 
-function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClose: () => void }) {
-  const [tail, setTail] = useState(100);
+function ModalBackdrop({ onClose, children, labelledBy }: { onClose: () => void; children: ReactNode; labelledBy?: string }) {
+  const handleBackdropClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (e.target === e.currentTarget) onClose();
+    },
+    [onClose],
+  );
 
-  const { data, isFetching, error, refetch } = useQuery({
-    queryKey: ["container-logs", agentId, containerName, tail],
-    queryFn: () => apiFetch<ContainerLogsDto>(`/agents/${agentId}/containers/${encodeURIComponent(containerName)}/logs?tail=${tail}`),
-    retry: false,
-    staleTime: 0,
-  });
-
-  const handleBackdropClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) onClose();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   return (
     <div
       onClick={handleBackdropClick}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={labelledBy}
       style={{
         position: "fixed",
         inset: 0,
@@ -100,6 +139,61 @@ function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClo
         padding: 24,
       }}
     >
+      {children}
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  action,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  action: PendingAction;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const copy = confirmCopy(action);
+  return (
+    <ModalBackdrop onClose={onCancel} labelledBy="confirm-title">
+      <div className="pixel-panel" style={{ width: "100%", maxWidth: 480, padding: "24px 26px", background: "var(--panel)" }}>
+        <div id="confirm-title" className="eyebrow">{copy.title}</div>
+        <p className="mono" style={{ fontSize: 12.5, lineHeight: 1.7, margin: "10px 0 20px", wordBreak: "break-word" }}>
+          {copy.message}
+        </p>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={onCancel} disabled={busy}>
+            CANCEL
+          </button>
+          <button
+            type="button"
+            className={action.kind === "revoke" ? "pixel-btn pixel-btn-danger" : "pixel-btn pixel-btn-danger pixel-btn-sm"}
+            onClick={onConfirm}
+            disabled={busy}
+            autoFocus
+          >
+            {busy ? "WORKING…" : copy.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </ModalBackdrop>
+  );
+}
+
+function LogsModal({ containerName, agentId, onClose }: { containerName: string; agentId: string; onClose: () => void }) {
+  const [tail, setTail] = useState(100);
+
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ["container-logs", agentId, containerName, tail],
+    queryFn: () => apiFetch<ContainerLogsDto>(`/agents/${agentId}/containers/${encodeURIComponent(containerName)}/logs?tail=${tail}`),
+    retry: false,
+    staleTime: 0,
+  });
+
+  return (
+    <ModalBackdrop onClose={onClose} labelledBy="logs-title">
       <div
         className="pixel-panel"
         style={{
@@ -113,7 +207,6 @@ function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClo
           overflow: "hidden",
         }}
       >
-        {/* Header */}
         <div
           style={{
             display: "flex",
@@ -122,9 +215,11 @@ function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClo
             padding: "12px 16px",
             borderBottom: "3px solid #2A2520",
             flexShrink: 0,
+            flexWrap: "wrap",
+            gap: 8,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div id="logs-title" style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span className="pixel" style={{ fontSize: 11, color: "var(--gold)" }}>LOGS</span>
             <span className="mono" style={{ fontSize: 12, color: "#888", fontWeight: 600 }}>{containerName}</span>
           </div>
@@ -133,6 +228,7 @@ function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClo
               className="mono"
               value={tail}
               onChange={(e) => setTail(Number(e.target.value))}
+              aria-label="Number of log lines"
               style={{
                 background: "#1A1814",
                 color: "#E8DCC8",
@@ -161,6 +257,7 @@ function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClo
               type="button"
               className="pixel-btn pixel-btn-ghost pixel-btn-sm"
               onClick={onClose}
+              autoFocus
               style={{ fontSize: 10 }}
             >
               ✕ CLOSE
@@ -168,7 +265,6 @@ function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClo
           </div>
         </div>
 
-        {/* Body */}
         <div style={{ flex: 1, overflow: "auto", padding: 16, minHeight: 0 }}>
           {isFetching && !data && (
             <p className="mono" style={{ color: "#888", fontSize: 12 }}>Fetching logs…</p>
@@ -205,7 +301,7 @@ function LogsModal({ containerName, agentId, onClose }: LogsModalState & { onClo
           )}
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 
@@ -242,11 +338,161 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function RepoTag({ repoUrl, gitRef }: { repoUrl: string; gitRef?: string }) {
+  const label = repoUrl.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
+  return (
+    <>
+      <span className="badge" style={{ background: "#E9F4FF", color: "var(--blue)", borderColor: "var(--blue)", marginRight: 6 }}>
+        GITHUB
+      </span>
+      {label}
+      {gitRef ? `@${gitRef}` : ""}
+    </>
+  );
+}
+
+function SectionPanel({
+  title,
+  count,
+  action,
+  children,
+}: {
+  title: string;
+  count?: number;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="pixel-panel" style={{ padding: "22px 28px 26px", marginBottom: 26 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div className="eyebrow" style={{ marginBottom: 0, display: "flex", alignItems: "center", gap: 10 }}>
+          {title}
+          {typeof count === "number" && (
+            <span className="badge">{count}</span>
+          )}
+        </div>
+        {action}
+      </div>
+      <div style={{ marginTop: 16 }}>{children}</div>
+    </div>
+  );
+}
+
+function CollapsibleForm({ title, open, onCancel, children }: { title: string; open: boolean; onCancel: () => void; children: ReactNode }) {
+  if (!open) return null;
+  return (
+    <div className="form-box">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+        <span className="eyebrow" style={{ marginBottom: 0 }}>{title}</span>
+        <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={onCancel}>
+          CANCEL
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function EmptyHint({ children }: { children: ReactNode }) {
+  return (
+    <p className="mono" style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 0" }}>
+      {children}
+    </p>
+  );
+}
+
+function Field({ label, optional, children }: { label: string; optional?: boolean; children: ReactNode }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 5, flex: "1 1 150px", minWidth: 0 }}>
+      <span className="field-label">
+        {label}
+        {optional ? " · OPTIONAL" : ""}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function EnvVarsEditor({
+  vars,
+  onChange,
+}: {
+  vars: { key: string; value: string }[];
+  onChange: (next: { key: string; value: string }[]) => void;
+}) {
+  return (
+    <div>
+      <div className="field-label" style={{ marginBottom: 8 }}>ENVIRONMENT VARIABLES</div>
+      {vars.length === 0 && (
+        <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: "0 0 8px" }}>
+          None — add variables your container expects.
+        </p>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {vars.map((env, i) => (
+          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              placeholder="VAR"
+              value={env.key}
+              onChange={(e) => {
+                const next = [...vars];
+                next[i].key = e.target.value;
+                onChange(next);
+              }}
+              style={{ width: 140 }}
+            />
+            <span className="mono" style={{ color: "#888" }}>=</span>
+            <input
+              placeholder="value"
+              value={env.value}
+              onChange={(e) => {
+                const next = [...vars];
+                next[i].value = e.target.value;
+                onChange(next);
+              }}
+              style={{ width: 180 }}
+            />
+            <button
+              type="button"
+              className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+              onClick={() => {
+                const next = [...vars];
+                next.splice(i, 1);
+                onChange(next);
+              }}
+              aria-label={`Remove variable ${env.key || i + 1}`}
+              style={{ fontSize: 10, padding: "2px 6px" }}
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+        onClick={() => onChange([...vars, { key: "", value: "" }])}
+        style={{ marginTop: 8 }}
+      >
+        + ADD VARIABLE
+      </button>
+    </div>
+  );
+}
+
 export function AgentDetail() {
   const { agentId } = useParams<{ agentId: string }>();
   const queryClient = useQueryClient();
 
   const [logsModal, setLogsModal] = useState<{ containerName: string } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<PendingAction | null>(null);
+  const [notice, setNotice] = useState<{ text: string; tone: "info" | "error" } | null>(null);
+
+  useEffect(() => {
+    if (!notice) return;
+    const id = window.setTimeout(() => setNotice(null), 4000);
+    return () => window.clearTimeout(id);
+  }, [notice]);
 
   // No single-agent endpoint exists — the list is the only source for this
   // agent's own status/online/last-heartbeat, so this page shares the same
@@ -257,10 +503,20 @@ export function AgentDetail() {
     refetchInterval: 5000,
   });
   const agent = agents?.find((a) => a.id === agentId);
+  const situation = agent ? situationFor(agent) : "offline";
+  const isRevoked = situation === "revoked";
 
   const revoke = useMutation({
     mutationFn: () => apiFetch<void>(`/agents/${agentId}/revoke`, { method: "POST" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agents"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      setNotice({ text: "Agent revoked.", tone: "info" });
+      setConfirmAction(null);
+    },
+    onError: (error) => {
+      setNotice({ text: `Couldn't revoke agent: ${(error as Error).message}`, tone: "error" });
+      setConfirmAction(null);
+    },
   });
 
   const containers = useQuery({
@@ -268,13 +524,22 @@ export function AgentDetail() {
     queryFn: () => apiFetch<ContainersResponse>(`/agents/${agentId}/containers`),
     refetchInterval: 5000,
   });
+  const activeContainers = (containers.data?.desired ?? []).filter((d) => {
+    if (d.status !== "absent") return true;
+    const observed = containers.data?.observed.find((o) => o.name === d.name);
+    return observed !== undefined && observed.status !== "removed";
+  });
+
   const proxyRoutes = useQuery({
     queryKey: ["proxy-routes", agentId],
     queryFn: () => apiFetch<ProxyRoutesResponse>(`/agents/${agentId}/proxy-routes`),
     refetchInterval: 5000,
   });
 
-  const [deployTab, setDeployTab] = useState<"container" | "compose">("container");
+  const [deployTab, setDeployTab] = useState<DeployTab>("container");
+  const [showContainerForm, setShowContainerForm] = useState(false);
+  const [showComposeForm, setShowComposeForm] = useState(false);
+  const [showRouteForm, setShowRouteForm] = useState(false);
 
   const [containerName, setContainerName] = useState("");
   const [deploySource, setDeploySource] = useState<"image" | "github">("image");
@@ -282,41 +547,63 @@ export function AgentDetail() {
   const [selectedRepo, setSelectedRepo] = useState("");
   const [gitRef, setGitRef] = useState("");
   const [dockerfilePath, setDockerfilePath] = useState("");
+  const [containerEnvVars, setContainerEnvVars] = useState<{ key: string; value: string }[]>([]);
+  const toEnvList = (vars: { key: string; value: string }[]) =>
+    vars
+      .filter((e) => e.key.trim() !== "")
+      .map((e) => `${e.key.trim()}=${e.value.trim()}`);
 
   const github = useQuery({
     queryKey: ["github-connection"],
     queryFn: fetchGitHubConnection,
   });
+  const hasRepos = (github.data?.repos.length ?? 0) > 0;
 
   const deployContainer = useMutation({
     mutationFn: () =>
-      apiFetch<void>(`/agents/${agentId}/containers/${encodeURIComponent(containerName)}`, {
+      apiFetch<void>(`/agents/${agentId}/containers/${encodeURIComponent(containerName.trim())}`, {
         method: "PUT",
         body: JSON.stringify(
           deploySource === "github"
-            ? { source: { repo_url: repoUrlFor(selectedRepo), git_ref: gitRef, dockerfile_path: dockerfilePath } }
-            : { image },
+            ? { source: { repo_url: repoUrlFor(selectedRepo), git_ref: gitRef, dockerfile_path: dockerfilePath }, env: toEnvList(containerEnvVars) }
+            : { image, env: toEnvList(containerEnvVars) },
         ),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["containers", agentId] });
+      setShowContainerForm(false);
       setContainerName("");
       setImage("");
       setSelectedRepo("");
       setGitRef("");
       setDockerfilePath("");
+      setContainerEnvVars([]);
+      setNotice({ text: "Container queued for deployment.", tone: "info" });
     },
   });
   const removeContainer = useMutation({
     mutationFn: (name: string) =>
       apiFetch<void>(`/agents/${agentId}/containers/${encodeURIComponent(name)}`, { method: "DELETE" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["containers", agentId] }),
+    onSuccess: (_data, name) => {
+      queryClient.invalidateQueries({ queryKey: ["containers", agentId] });
+      setNotice({ text: `Container "${name}" queued for removal.`, tone: "info" });
+      setConfirmAction(null);
+    },
+    onError: (error, name) => {
+      setNotice({ text: `Couldn't remove container "${name}": ${(error as Error).message}`, tone: "error" });
+      setConfirmAction(null);
+    },
   });
 
   const composeStacks = useQuery({
     queryKey: ["compose-stacks", agentId],
     queryFn: () => apiFetch<ComposeStacksResponse>(`/agents/${agentId}/compose-stacks`),
     refetchInterval: 5000,
+  });
+  const activeCompose = (composeStacks.data?.desired ?? []).filter((d) => {
+    if (d.status !== "absent") return true;
+    const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
+    return observed !== undefined && observed.status !== "removed";
   });
 
   const [composeName, setComposeName] = useState("");
@@ -327,31 +614,39 @@ export function AgentDetail() {
 
   const deployComposeStack = useMutation({
     mutationFn: () =>
-      apiFetch<void>(`/agents/${agentId}/compose-stacks/${encodeURIComponent(composeName)}`, {
+      apiFetch<void>(`/agents/${agentId}/compose-stacks/${encodeURIComponent(composeName.trim())}`, {
         method: "PUT",
         body: JSON.stringify({
           repo_url: repoUrlFor(composeSelectedRepo),
           git_ref: composeGitRef,
           compose_file_path: composeFilePath,
-          env: composeEnvVars
-            .filter((e) => e.key.trim() !== "")
-            .map((e) => `${e.key.trim()}=${e.value.trim()}`),
+          env: toEnvList(composeEnvVars),
         }),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["compose-stacks", agentId] });
+      setShowComposeForm(false);
       setComposeName("");
       setComposeSelectedRepo("");
       setComposeGitRef("");
       setComposeFilePath("");
       setComposeEnvVars([]);
+      setNotice({ text: "Compose stack queued for deployment.", tone: "info" });
     },
   });
 
   const removeComposeStack = useMutation({
     mutationFn: (name: string) =>
       apiFetch<void>(`/agents/${agentId}/compose-stacks/${encodeURIComponent(name)}`, { method: "DELETE" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["compose-stacks", agentId] }),
+    onSuccess: (_data, name) => {
+      queryClient.invalidateQueries({ queryKey: ["compose-stacks", agentId] });
+      setNotice({ text: `Stack "${name}" queued for removal.`, tone: "info" });
+      setConfirmAction(null);
+    },
+    onError: (error, name) => {
+      setNotice({ text: `Couldn't remove stack "${name}": ${(error as Error).message}`, tone: "error" });
+      setConfirmAction(null);
+    },
   });
 
   const [routeName, setRouteName] = useState("");
@@ -361,7 +656,7 @@ export function AgentDetail() {
   const [upstreamPort, setUpstreamPort] = useState(8080);
   const deployRoute = useMutation({
     mutationFn: () =>
-      apiFetch<void>(`/agents/${agentId}/proxy-routes/${encodeURIComponent(routeName)}`, {
+      apiFetch<void>(`/agents/${agentId}/proxy-routes/${encodeURIComponent(routeName.trim())}`, {
         method: "PUT",
         body: JSON.stringify({
           server_name: serverName,
@@ -372,13 +667,23 @@ export function AgentDetail() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["proxy-routes", agentId] });
+      setShowRouteForm(false);
       setRouteName("");
+      setNotice({ text: "Proxy route queued.", tone: "info" });
     },
   });
   const removeRoute = useMutation({
     mutationFn: (name: string) =>
       apiFetch<void>(`/agents/${agentId}/proxy-routes/${encodeURIComponent(name)}`, { method: "DELETE" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["proxy-routes", agentId] }),
+    onSuccess: (_data, name) => {
+      queryClient.invalidateQueries({ queryKey: ["proxy-routes", agentId] });
+      setNotice({ text: `Route "${name}" queued for removal.`, tone: "info" });
+      setConfirmAction(null);
+    },
+    onError: (error, name) => {
+      setNotice({ text: `Couldn't remove route "${name}": ${(error as Error).message}`, tone: "error" });
+      setConfirmAction(null);
+    },
   });
 
   function handleDeployContainer(e: FormEvent) {
@@ -394,8 +699,41 @@ export function AgentDetail() {
     deployRoute.mutate();
   }
 
+  function handleConfirmAction() {
+    if (!confirmAction) return;
+    switch (confirmAction.kind) {
+      case "container":
+        removeContainer.mutate(confirmAction.name);
+        break;
+      case "compose":
+        removeComposeStack.mutate(confirmAction.name);
+        break;
+      case "route":
+        removeRoute.mutate(confirmAction.name);
+        break;
+      case "revoke":
+        revoke.mutate();
+        break;
+    }
+  }
+
   const sprite = agentId ? spriteFor(agentId) : null;
-  const situation = agent ? situationFor(agent) : "offline";
+
+  const deploymentCount = activeContainers.length + activeCompose.length;
+  const statChips: string[] = [];
+  if (containers.data && composeStacks.data) {
+    statChips.push(`${deploymentCount} DEPLOYMENT${deploymentCount === 1 ? "" : "S"}`);
+  }
+  if (proxyRoutes.data) {
+    const n = proxyRoutes.data.desired.length;
+    statChips.push(`${n} ROUTE${n === 1 ? "" : "S"}`);
+  }
+
+  const confirmBusy =
+    removeContainer.isPending ||
+    removeComposeStack.isPending ||
+    removeRoute.isPending ||
+    revoke.isPending;
 
   return (
     <div className="game-hud">
@@ -420,13 +758,19 @@ export function AgentDetail() {
         </div>
       </header>
 
-      <main style={{ maxWidth: 1180, margin: "0 auto", padding: "44px 32px 90px" }}>
-        <section>
+      <main style={{ maxWidth: 1180, margin: "0 auto", padding: "36px 32px 90px" }}>
+        {notice && (
+          <div className={notice.tone === "error" ? "alert-row" : "alert-row alert-row-info"} style={{ marginBottom: 20 }} role="status">
+            {notice.text}
+          </div>
+        )}
+
+        <section style={{ marginBottom: 26 }}>
           <div className="pixel-panel" style={{ padding: 0, overflow: "hidden" }}>
             <div
               style={{
                 background: "linear-gradient(180deg, #DCEBFF 0%, var(--bg) 100%)",
-                padding: "28px 30px 20px",
+                padding: "26px 30px 20px",
                 borderBottom: "4px solid var(--ink)",
                 boxShadow: "inset 0 3px 0 rgba(255,255,255,0.5)",
                 display: "flex",
@@ -472,433 +816,468 @@ export function AgentDetail() {
                   </span>
                 </div>
               </div>
-              {agent?.status === "active" && (
-                <button
-                  type="button"
-                  className="pixel-btn pixel-btn-danger"
-                  onClick={() => revoke.mutate()}
-                  disabled={revoke.isPending}
-                >
-                  REVOKE
-                </button>
-              )}
-            </div>
-
-            <div style={{ padding: "26px 30px" }}>
-              <div style={{ marginBottom: 24 }}>
-                <div className="eyebrow" style={{ marginBottom: 10 }}>DEPLOYMENTS</div>
-                <p className="mono" style={{ fontSize: 11, color: "var(--muted)", marginTop: 0 }}>
-                  Changes take effect the next time this agent reports its state — up to one heartbeat interval, not
-                  instantly.
-                </p>
-                <div style={{ display: "flex", gap: 8, marginTop: 14, marginBottom: 14 }}>
-                  <button
-                    type="button"
-                    className={deployTab === "container" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                    onClick={() => setDeployTab("container")}
-                  >
-                    SINGLE CONTAINER
-                  </button>
-                  <button
-                    type="button"
-                    className={deployTab === "compose" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                    onClick={() => setDeployTab("compose")}
-                  >
-                    DOCKER COMPOSE
-                  </button>
-                </div>
-                {deployTab === "container" && (
-                  <>
-                {(() => {
-                  const activeContainers = containers.data?.desired.filter((d) => {
-                    if (d.status !== "absent") return true;
-                    const observed = containers.data?.observed.find((o) => o.name === d.name);
-                    return observed && observed.status !== "removed";
-                  });
-                  if (!activeContainers || activeContainers.length === 0) return null;
-                  return (
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>NAME</th>
-                          <th>IMAGE / SOURCE</th>
-                          <th>DESIRED</th>
-                          <th>OBSERVED</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activeContainers.map((d) => {
-                          const observed = containers.data?.observed.find((o) => o.name === d.name);
-                          const isAbsent = d.status === "absent";
-                          return (
-                            <tr key={d.name}>
-                              <td>{d.name}</td>
-                              <td>
-                                {d.source ? (
-                                  <>
-                                    <span className="badge" style={{ background: "#E9F4FF", color: "var(--blue)", borderColor: "var(--blue)", marginRight: 6 }}>
-                                      GITHUB
-                                    </span>
-                                    {d.source.repo_url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "")}
-                                    {d.source.git_ref && `@${d.source.git_ref}`}
-                                  </>
-                                ) : (
-                                  d.image
-                                )}
-                              </td>
-                              <td>
-                                <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
-                              </td>
-                              <td>
-                                {observed ? (
-                                  <div>
-                                    <StatusBadge status={observed.status} />
-                                    {observed.error && (
-                                      <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
-                                        ⚠ {observed.error}
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  "—"
-                                )}
-                              </td>
-                              <td>
-                                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                                  <button
-                                    type="button"
-                                    className="pixel-btn pixel-btn-ghost pixel-btn-sm"
-                                    onClick={() => setLogsModal({ containerName: d.name })}
-                                  >
-                                    LOGS
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                                    onClick={() => removeContainer.mutate(d.name)}
-                                    disabled={removeContainer.isPending || isAbsent}
-                                  >
-                                    {isAbsent ? "REMOVING…" : "REMOVE"}
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  );
-                })()}
-                <div style={{ display: "flex", gap: 8, marginTop: 14, marginBottom: 10 }}>
-                  <button
-                    type="button"
-                    className={deploySource === "image" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                    onClick={() => setDeploySource("image")}
-                  >
-                    IMAGE
-                  </button>
-                  <button
-                    type="button"
-                    className={deploySource === "github" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                    onClick={() => setDeploySource("github")}
-                  >
-                    FROM GITHUB REPO
-                  </button>
-                </div>
-                <form onSubmit={handleDeployContainer} className="inline-form">
-                  <input placeholder="name" value={containerName} onChange={(e) => setContainerName(e.target.value)} required />
-                  {deploySource === "image" ? (
-                    <input
-                      placeholder="image (e.g. nginx:alpine)"
-                      value={image}
-                      onChange={(e) => setImage(e.target.value)}
-                      required
-                    />
-                  ) : github.data && github.data.repos.length > 0 ? (
-                    <>
-                      <select value={selectedRepo} onChange={(e) => setSelectedRepo(e.target.value)} required>
-                        <option value="" disabled>
-                          select a repo…
-                        </option>
-                        {github.data.repos.map((r) => (
-                          <option key={r.full_name} value={r.full_name}>
-                            {r.full_name}
-                            {r.private ? " (private)" : ""}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        placeholder="branch (default: repo's default branch)"
-                        value={gitRef}
-                        onChange={(e) => setGitRef(e.target.value)}
-                      />
-                      <input
-                        placeholder="Dockerfile path (default: Dockerfile)"
-                        value={dockerfilePath}
-                        onChange={(e) => setDockerfilePath(e.target.value)}
-                      />
-                    </>
-                  ) : (
-                    <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
-                      {github.isLoading ? "Loading repos…" : "Connect a GitHub account from the dashboard first."}
-                    </p>
-                  )}
-                  <button
-                    type="submit"
-                    className="pixel-btn pixel-btn-sm"
-                    disabled={deployContainer.isPending || (deploySource === "github" && !github.data?.repos.length)}
-                  >
-                    DEPLOY
-                  </button>
-                </form>
-                {deployContainer.isError && <div className="alert-row">{(deployContainer.error as Error).message}</div>}
-                  </>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 }}>
+                {statChips.length > 0 && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {statChips.map((chip) => (
+                      <span key={chip} className="badge">{chip}</span>
+                    ))}
+                  </div>
                 )}
-                {deployTab === "compose" && (
-                  <>
-                {(() => {
-                  const activeCompose = composeStacks.data?.desired.filter((d) => {
-                    if (d.status !== "absent") return true;
-                    const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
-                    return observed && observed.status !== "removed";
-                  });
-                  if (!activeCompose || activeCompose.length === 0) return null;
-                  return (
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>NAME</th>
-                          <th>SOURCE</th>
-                          <th>DESIRED</th>
-                          <th>OBSERVED</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activeCompose.map((d) => {
-                          const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
-                          const isAbsent = d.status === "absent";
-                          return (
-                            <tr key={d.name}>
-                              <td>{d.name}</td>
-                              <td>
-                                {d.source ? (
-                                  <>
-                                    <span className="badge" style={{ background: "#E9F4FF", color: "var(--blue)", borderColor: "var(--blue)", marginRight: 6 }}>
-                                      GITHUB
-                                    </span>
-                                    {d.source.repo_url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "")}
-                                    {d.source.git_ref && `@${d.source.git_ref}`}
-                                    {d.compose_file_path && ` (file: ${d.compose_file_path})`}
-                                  </>
-                                ) : (
-                                  "—"
-                                )}
-                              </td>
-                              <td>
-                                <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
-                              </td>
-                              <td>
-                                {observed ? (
-                                  <div>
-                                    <StatusBadge status={observed.status} />
-                                    {observed.error && (
-                                      <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
-                                        ⚠ {observed.error}
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  "—"
-                                )}
-                              </td>
-                              <td>
-                                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                                  <button
-                                    type="button"
-                                    className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                                    onClick={() => removeComposeStack.mutate(d.name)}
-                                    disabled={removeComposeStack.isPending || isAbsent}
-                                  >
-                                    {isAbsent ? "REMOVING…" : "REMOVE"}
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  );
-                })()}
-
-                <form onSubmit={handleDeployComposeStack} className="inline-form" style={{ marginTop: 14 }}>
-                  <input placeholder="stack name" value={composeName} onChange={(e) => setComposeName(e.target.value)} required />
-                  {github.data && github.data.repos.length > 0 ? (
-                    <>
-                      <select value={composeSelectedRepo} onChange={(e) => setComposeSelectedRepo(e.target.value)} required>
-                        <option value="" disabled>
-                          select a repo…
-                        </option>
-                        {github.data.repos.map((r) => (
-                          <option key={r.full_name} value={r.full_name}>
-                            {r.full_name}
-                            {r.private ? " (private)" : ""}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        placeholder="branch (default: repo's default branch)"
-                        value={composeGitRef}
-                        onChange={(e) => setComposeGitRef(e.target.value)}
-                      />
-                      <input
-                        placeholder="compose file (default: docker-compose.yml)"
-                        value={composeFilePath}
-                        onChange={(e) => setComposeFilePath(e.target.value)}
-                      />
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
-                        <div className="eyebrow" style={{ fontSize: 10 }}>ENVIRONMENT VARIABLES</div>
-                        {composeEnvVars.map((env, i) => (
-                          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                            <input
-                              placeholder="VAR"
-                              value={env.key}
-                              onChange={(e) => {
-                                const next = [...composeEnvVars];
-                                next[i].key = e.target.value;
-                                setComposeEnvVars(next);
-                              }}
-                              style={{ width: 120 }}
-                            />
-                            <span className="mono" style={{ color: "#888" }}>=</span>
-                            <input
-                              placeholder="value"
-                              value={env.value}
-                              onChange={(e) => {
-                                const next = [...composeEnvVars];
-                                next[i].value = e.target.value;
-                                setComposeEnvVars(next);
-                              }}
-                              style={{ width: 160 }}
-                            />
-                            <button
-                              type="button"
-                              className="pixel-btn pixel-btn-ghost pixel-btn-sm"
-                              onClick={() => {
-                                const next = [...composeEnvVars];
-                                next.splice(i, 1);
-                                setComposeEnvVars(next);
-                              }}
-                              style={{ fontSize: 10, padding: "2px 6px" }}
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
-                        <button
-                          type="button"
-                          className="pixel-btn pixel-btn-ghost pixel-btn-sm"
-                          onClick={() => setComposeEnvVars([...composeEnvVars, { key: "", value: "" }])}
-                          style={{ alignSelf: "flex-start", marginTop: 4 }}
-                        >
-                          + ADD VARIABLE
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
-                      {github.isLoading ? "Loading repos…" : "Connect a GitHub account from the dashboard first."}
-                    </p>
-                  )}
+                {agent?.status === "active" && (
                   <button
-                    type="submit"
-                    className="pixel-btn pixel-btn-sm"
-                    disabled={deployComposeStack.isPending || !github.data?.repos.length}
-                    style={{ alignSelf: "flex-start" }}
+                    type="button"
+                    className="pixel-btn pixel-btn-danger"
+                    onClick={() => setConfirmAction({ kind: "revoke" })}
                   >
-                    DEPLOY COMPOSE STACK
+                    REVOKE AGENT
                   </button>
-                </form>
-                {deployComposeStack.isError && <div className="alert-row">{(deployComposeStack.error as Error).message}</div>}
-                  </>
                 )}
               </div>
+            </div>
 
-              <div>
-                <div className="eyebrow" style={{ marginBottom: 10 }}>PROXY ROUTES</div>
-                {proxyRoutes.data?.error && <div className="alert-row">Last apply error: {proxyRoutes.data.error}</div>}
-                {proxyRoutes.data && proxyRoutes.data.desired.length > 0 && (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>NAME</th>
-                        <th>SERVER NAME</th>
-                        <th>LISTEN</th>
-                        <th>UPSTREAM</th>
-                        <th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {proxyRoutes.data.desired.map((r) => (
-                        <tr key={r.name}>
-                          <td>{r.name}</td>
-                          <td>{r.server_name || "(catch-all)"}</td>
-                          <td>{r.listen_port}</td>
+            <div style={{ padding: "18px 30px" }}>
+              <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
+                ⓘ Changes are queued and applied when this agent next checks in — usually within one heartbeat.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {isRevoked && (
+          <div className="alert-row alert-row-warn" style={{ marginBottom: 22 }}>
+            This agent is revoked — deploying new containers, stacks or routes is disabled.
+          </div>
+        )}
+
+        <SectionPanel
+          title="DEPLOYMENTS"
+          count={containers.data || composeStacks.data ? deploymentCount : undefined}
+          action={
+            !isRevoked && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <button
+                  type="button"
+                  className={deployTab === "container" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                  onClick={() => setDeployTab("container")}
+                >
+                  CONTAINERS
+                </button>
+                <button
+                  type="button"
+                  className={deployTab === "compose" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                  onClick={() => setDeployTab("compose")}
+                >
+                  COMPOSE
+                </button>
+                {deployTab === "container" ? (
+                  <button
+                    type="button"
+                    className={showContainerForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
+                    onClick={() => setShowContainerForm((v) => !v)}
+                  >
+                    {showContainerForm ? "✕ CLOSE" : "+ NEW CONTAINER"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className={showComposeForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
+                    onClick={() => setShowComposeForm((v) => !v)}
+                  >
+                    {showComposeForm ? "✕ CLOSE" : "+ NEW STACK"}
+                  </button>
+                )}
+              </div>
+            )
+          }
+        >
+          {deployTab === "container" ? (
+            <>
+              {containers.isLoading && <EmptyHint>Loading containers…</EmptyHint>}
+              {containers.isError && (
+                <div className="alert-row">Couldn't load containers — retrying… ({(containers.error as Error).message})</div>
+              )}
+              {containers.data && activeContainers.length === 0 && (
+                <EmptyHint>No containers yet{isRevoked ? "." : " — use “+ New Container” to deploy one."}</EmptyHint>
+              )}
+              {activeContainers.length > 0 && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>NAME</th>
+                      <th>IMAGE / SOURCE</th>
+                      <th>DESIRED</th>
+                      <th>OBSERVED</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeContainers.map((d) => {
+                      const observed = containers.data?.observed.find((o) => o.name === d.name);
+                      const isAbsent = d.status === "absent";
+                      return (
+                        <tr key={d.name}>
+                          <td style={{ fontWeight: 700 }}>{d.name}</td>
                           <td>
-                            {r.upstream_host}:{r.upstream_port}
+                            {d.source ? (
+                              <RepoTag repoUrl={d.source.repo_url} gitRef={d.source.git_ref} />
+                            ) : (
+                              d.image
+                            )}
+                            {(d.env?.length ?? 0) > 0 && (
+                              <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
+                                {d.env!.length} env var{d.env!.length === 1 ? "" : "s"}
+                              </div>
+                            )}
                           </td>
                           <td>
-                            <button
-                              type="button"
-                              className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                              onClick={() => removeRoute.mutate(r.name)}
-                            >
-                              REMOVE
-                            </button>
+                            <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
+                          </td>
+                          <td>
+                            {observed ? (
+                              <div>
+                                <StatusBadge status={observed.status} />
+                                {observed.error && (
+                                  <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
+                                    ⚠ {observed.error}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                              <button
+                                type="button"
+                                className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                                onClick={() => setLogsModal({ containerName: d.name })}
+                              >
+                                LOGS
+                              </button>
+                              <button
+                                type="button"
+                                className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                                onClick={() => setConfirmAction({ kind: "container", name: d.name })}
+                                disabled={isAbsent}
+                              >
+                                {isAbsent ? "REMOVING…" : "REMOVE"}
+                              </button>
+                            </div>
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-                <form onSubmit={handleDeployRoute} className="inline-form">
-                  <input placeholder="name" value={routeName} onChange={(e) => setRouteName(e.target.value)} required />
-                  <input
-                    placeholder="server_name (optional)"
-                    value={serverName}
-                    onChange={(e) => setServerName(e.target.value)}
-                  />
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+
+              <CollapsibleForm
+                title="NEW CONTAINER"
+                open={showContainerForm && !isRevoked}
+                onCancel={() => setShowContainerForm(false)}
+              >
+                <form onSubmit={handleDeployContainer}>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+                    <Field label="NAME">
+                      <input placeholder="my-app" value={containerName} onChange={(e) => setContainerName(e.target.value)} required autoFocus />
+                    </Field>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        type="button"
+                        className={deploySource === "image" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                        onClick={() => setDeploySource("image")}
+                      >
+                        IMAGE
+                      </button>
+                      <button
+                        type="button"
+                        className={deploySource === "github" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                        onClick={() => setDeploySource("github")}
+                      >
+                        BUILD FROM GITHUB
+                      </button>
+                    </div>
+                  </div>
+                  {deploySource === "image" ? (
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                      <Field label="IMAGE">
+                        <input placeholder="nginx:alpine" value={image} onChange={(e) => setImage(e.target.value)} required />
+                      </Field>
+                    </div>
+                  ) : hasRepos ? (
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                      <Field label="REPOSITORY">
+                        <select value={selectedRepo} onChange={(e) => setSelectedRepo(e.target.value)} required>
+                          <option value="" disabled>
+                            select a repo…
+                          </option>
+                          {github.data?.repos.map((r) => (
+                            <option key={r.full_name} value={r.full_name}>
+                              {r.full_name}
+                              {r.private ? " (private)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="BRANCH" optional>
+                        <input placeholder="repo's default branch" value={gitRef} onChange={(e) => setGitRef(e.target.value)} />
+                      </Field>
+                      <Field label="DOCKERFILE PATH" optional>
+                        <input placeholder="Dockerfile" value={dockerfilePath} onChange={(e) => setDockerfilePath(e.target.value)} />
+                      </Field>
+                    </div>
+                  ) : (
+                    <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: "0 0 14px" }}>
+                      {github.isLoading ? "Loading repos…" : "Connect a GitHub account from the dashboard first."}
+                    </p>
+                  )}
+                  <div style={{ marginBottom: 14 }}>
+                    <EnvVarsEditor vars={containerEnvVars} onChange={setContainerEnvVars} />
+                  </div>
+                  <button
+                    type="submit"
+                    className="pixel-btn pixel-btn-sm"
+                    disabled={deployContainer.isPending || (deploySource === "github" && !hasRepos)}
+                  >
+                    {deployContainer.isPending ? "DEPLOYING…" : "DEPLOY"}
+                  </button>
+                  {deployContainer.isError && <div className="alert-row">{(deployContainer.error as Error).message}</div>}
+                </form>
+              </CollapsibleForm>
+            </>
+          ) : (
+            <>
+              {composeStacks.isLoading && <EmptyHint>Loading stacks…</EmptyHint>}
+              {composeStacks.isError && (
+                <div className="alert-row">Couldn't load stacks — retrying… ({(composeStacks.error as Error).message})</div>
+              )}
+              {composeStacks.data && activeCompose.length === 0 && (
+                <EmptyHint>No compose stacks yet{isRevoked ? "." : " — use “+ New Stack” to deploy a multi-container app."}</EmptyHint>
+              )}
+              {activeCompose.length > 0 && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>NAME</th>
+                      <th>SOURCE</th>
+                      <th>DESIRED</th>
+                      <th>OBSERVED</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeCompose.map((d) => {
+                      const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
+                      const isAbsent = d.status === "absent";
+                      return (
+                        <tr key={d.name}>
+                          <td style={{ fontWeight: 700 }}>{d.name}</td>
+                          <td>
+                            {d.source ? (
+                              <>
+                                <RepoTag repoUrl={d.source.repo_url} gitRef={d.source.git_ref} />
+                                {d.compose_file_path && (
+                                  <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
+                                    file: {d.compose_file_path}
+                                  </div>
+                                )}
+                              </>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td>
+                            <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
+                          </td>
+                          <td>
+                            {observed ? (
+                              <div>
+                                <StatusBadge status={observed.status} />
+                                {observed.error && (
+                                  <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
+                                    ⚠ {observed.error}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td>
+                            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                              <button
+                                type="button"
+                                className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                                onClick={() => setConfirmAction({ kind: "compose", name: d.name })}
+                                disabled={isAbsent}
+                              >
+                                {isAbsent ? "REMOVING…" : "REMOVE"}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+
+              <CollapsibleForm
+                title="NEW COMPOSE STACK"
+                open={showComposeForm && !isRevoked}
+                onCancel={() => setShowComposeForm(false)}
+              >
+                <form onSubmit={handleDeployComposeStack}>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                    <Field label="STACK NAME">
+                      <input placeholder="my-stack" value={composeName} onChange={(e) => setComposeName(e.target.value)} required autoFocus />
+                    </Field>
+                    <Field label="REPOSITORY">
+                      <select value={composeSelectedRepo} onChange={(e) => setComposeSelectedRepo(e.target.value)} required disabled={!hasRepos}>
+                        <option value="" disabled>
+                          select a repo…
+                        </option>
+                        {github.data?.repos.map((r) => (
+                          <option key={r.full_name} value={r.full_name}>
+                            {r.full_name}
+                            {r.private ? " (private)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="BRANCH" optional>
+                      <input placeholder="repo's default branch" value={composeGitRef} onChange={(e) => setComposeGitRef(e.target.value)} />
+                    </Field>
+                    <Field label="COMPOSE FILE" optional>
+                      <input placeholder="docker-compose.yml" value={composeFilePath} onChange={(e) => setComposeFilePath(e.target.value)} />
+                    </Field>
+                  </div>
+                  {!hasRepos && (
+                    <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: "0 0 14px" }}>
+                      {github.isLoading ? "Loading repos…" : "Connect a GitHub account from the dashboard first."}
+                    </p>
+                  )}
+                  <div style={{ marginBottom: 14 }}>
+                    <EnvVarsEditor vars={composeEnvVars} onChange={setComposeEnvVars} />
+                  </div>
+                  <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployComposeStack.isPending || !hasRepos}>
+                    {deployComposeStack.isPending ? "DEPLOYING…" : "DEPLOY STACK"}
+                  </button>
+                  {deployComposeStack.isError && <div className="alert-row">{(deployComposeStack.error as Error).message}</div>}
+                </form>
+              </CollapsibleForm>
+            </>
+          )}
+        </SectionPanel>
+
+        <SectionPanel
+          title="PROXY ROUTES"
+          count={proxyRoutes.data ? proxyRoutes.data.desired.length : undefined}
+          action={
+            !isRevoked && (
+              <button
+                type="button"
+                className={showRouteForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
+                onClick={() => setShowRouteForm((v) => !v)}
+              >
+                {showRouteForm ? "✕ CLOSE" : "+ NEW ROUTE"}
+              </button>
+            )
+          }
+        >
+          {proxyRoutes.data?.error && (
+            <div className="alert-row">Last apply error: {proxyRoutes.data.error}</div>
+          )}
+          {proxyRoutes.isLoading && <EmptyHint>Loading routes…</EmptyHint>}
+          {proxyRoutes.isError && (
+                <div className="alert-row">Couldn't load routes — retrying… ({(proxyRoutes.error as Error).message})</div>
+          )}
+          {proxyRoutes.data && proxyRoutes.data.desired.length === 0 && (
+            <EmptyHint>No routes yet{isRevoked ? "." : " — use “+ New Route” to expose a container port."}</EmptyHint>
+          )}
+          {proxyRoutes.data && proxyRoutes.data.desired.length > 0 && (
+            <table>
+              <thead>
+                <tr>
+                  <th>NAME</th>
+                  <th>SERVER NAME</th>
+                  <th>LISTEN</th>
+                  <th>UPSTREAM</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {proxyRoutes.data.desired.map((r) => (
+                  <tr key={r.name}>
+                    <td style={{ fontWeight: 700 }}>{r.name}</td>
+                    <td>{r.server_name || "(catch-all)"}</td>
+                    <td>:{r.listen_port}</td>
+                    <td>
+                      {r.upstream_host}:{r.upstream_port}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                        <button
+                          type="button"
+                          className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                          onClick={() => setConfirmAction({ kind: "route", name: r.name })}
+                        >
+                          REMOVE
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <CollapsibleForm
+            title="NEW PROXY ROUTE"
+            open={showRouteForm && !isRevoked}
+            onCancel={() => setShowRouteForm(false)}
+          >
+            <form onSubmit={handleDeployRoute}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                <Field label="NAME">
+                  <input placeholder="web" value={routeName} onChange={(e) => setRouteName(e.target.value)} required autoFocus />
+                </Field>
+                <Field label="SERVER NAME" optional>
+                  <input placeholder="example.com" value={serverName} onChange={(e) => setServerName(e.target.value)} />
+                </Field>
+                <Field label="LISTEN PORT">
                   <input
                     type="number"
-                    placeholder="listen port"
+                    min={1}
+                    max={65535}
                     value={listenPort}
                     onChange={(e) => setListenPort(Number(e.target.value))}
                     required
                   />
-                  <input
-                    placeholder="upstream host"
-                    value={upstreamHost}
-                    onChange={(e) => setUpstreamHost(e.target.value)}
-                    required
-                  />
+                </Field>
+                <Field label="UPSTREAM HOST">
+                  <input placeholder="127.0.0.1" value={upstreamHost} onChange={(e) => setUpstreamHost(e.target.value)} required />
+                </Field>
+                <Field label="UPSTREAM PORT">
                   <input
                     type="number"
-                    placeholder="upstream port"
+                    min={1}
+                    max={65535}
                     value={upstreamPort}
                     onChange={(e) => setUpstreamPort(Number(e.target.value))}
                     required
                   />
-                  <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployRoute.isPending}>
-                    DEPLOY ROUTE
-                  </button>
-                </form>
-                {deployRoute.isError && <div className="alert-row">{(deployRoute.error as Error).message}</div>}
+                </Field>
               </div>
-            </div>
-          </div>
-        </section>
+              <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployRoute.isPending}>
+                {deployRoute.isPending ? "DEPLOYING…" : "DEPLOY ROUTE"}
+              </button>
+              {deployRoute.isError && <div className="alert-row">{(deployRoute.error as Error).message}</div>}
+            </form>
+          </CollapsibleForm>
+        </SectionPanel>
       </main>
 
       {logsModal && agentId && (
@@ -906,6 +1285,15 @@ export function AgentDetail() {
           agentId={agentId}
           containerName={logsModal.containerName}
           onClose={() => setLogsModal(null)}
+        />
+      )}
+
+      {confirmAction && !isRevoked && (
+        <ConfirmDialog
+          action={confirmAction}
+          busy={confirmBusy}
+          onConfirm={handleConfirmAction}
+          onCancel={() => setConfirmAction(null)}
         />
       )}
     </div>

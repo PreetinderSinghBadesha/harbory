@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { CopyButton } from "../components/CopyButton";
 import { GitHubMark } from "../components/GitHubMark";
-import { spriteFor } from "../lib/agentSprite";
+import { misuseIcon, spriteFor } from "../lib/agentSprite";
+import greenDrive1 from "../assets/sprites/robot_greenDrive1.png";
+import greenDrive2 from "../assets/sprites/robot_greenDrive2.png";
+import greenHurt from "../assets/sprites/robot_greenHurt.png";
+import blueDrive1 from "../assets/sprites/robot_blueDrive1.png";
+import yellowDrive1 from "../assets/sprites/robot_yellowDrive1.png";
+import redDrive1 from "../assets/sprites/robot_redDrive1.png";
 import "../styles/GameHud.css";
 import "./Docs.css";
 
@@ -28,7 +34,37 @@ const TOC = [
   { id: "created", label: "What gets created" },
   { id: "control-plane", label: "Running a control plane" },
   { id: "redeploy", label: "Redeploying & re-pairing" },
+  { id: "sprites", label: "The robots" },
 ];
+
+function SpriteCard({
+  stageClass,
+  children,
+  badge,
+  badgeStyle,
+  caption,
+}: {
+  stageClass: string;
+  children: React.ReactNode;
+  badge: string;
+  badgeStyle: React.CSSProperties;
+  caption: string;
+}) {
+  return (
+    <div className="pixel-panel-sm" style={{ padding: "18px 14px 16px", textAlign: "center", background: "var(--bg)" }}>
+      <div className="sprite-sky">
+        <div className={`sprite-stage ${stageClass}`}>{children}</div>
+        <div className="ground" />
+      </div>
+      <div style={{ marginTop: 10, marginBottom: 8 }}>
+        <span className="badge" style={badgeStyle}>{badge}</span>
+      </div>
+      <p className="mono" style={{ fontSize: 11.5, lineHeight: 1.6, color: "var(--muted)", margin: 0 }}>
+        {caption}
+      </p>
+    </div>
+  );
+}
 
 function CodeBlock({ command, label, step }: { command: string; label: string; step?: number }) {
   return (
@@ -325,6 +361,76 @@ export function Docs() {
               </ul>
               <div style={{ marginTop: 14 }}>
                 <CodeBlock command={REPAIR_COMMAND} label="re-pair command" />
+              </div>
+            </Section>
+
+            <Section id="sprites" title="The robots">
+              <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--muted)", margin: "0 0 18px" }}>
+                Every agent shows up in the dashboard as a little robot character. Which of the four
+                characters you get isn't a setting — it's picked by hashing the agent's id, so the same
+                agent always keeps the same look. The color is purely cosmetic; the <em>pose</em> is what
+                carries meaning:
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 16 }}>
+                <SpriteCard
+                  stageClass=""
+                  badge="ONLINE"
+                  badgeStyle={{ background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }}
+                  caption="Driving along — connected and reporting heartbeats right now."
+                >
+                  <>
+                    <img className="f1" src={greenDrive1} alt="" />
+                    <img className="f2" src={greenDrive2} alt="" />
+                  </>
+                </SpriteCard>
+                <SpriteCard
+                  stageClass="sprite-offline"
+                  badge="OFFLINE"
+                  badgeStyle={{ background: "#F3F0EA", color: "#8A7E72", borderColor: "#8A7E72" }}
+                  caption="Grayed out, gently swaying — still paired, but it missed its recent check-ins."
+                >
+                  <img src={greenHurt} alt="" />
+                </SpriteCard>
+                <SpriteCard
+                  stageClass="sprite-revoked"
+                  badge="REVOKED"
+                  badgeStyle={{ background: "#FDE8E8", color: "var(--clay)", borderColor: "var(--clay)" }}
+                  caption="Red-tinted glitch — access permanently cut off. Re-pair with a fresh token to use it again."
+                >
+                  <img src={greenHurt} alt="" />
+                </SpriteCard>
+              </div>
+              <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "18px 0 0" }}>
+                Revoked beats everything — a revoked agent never shows the driving animation, even if its
+                connection hasn't been dropped yet.
+              </p>
+              <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "18px 0 10px" }}>
+                The four characters — green, blue, yellow, and red:
+              </p>
+              <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                {[
+                  { name: "GREEN", img: greenDrive1 },
+                  { name: "BLUE", img: blueDrive1 },
+                  { name: "YELLOW", img: yellowDrive1 },
+                  { name: "RED", img: redDrive1 },
+                ].map((c) => (
+                  <div key={c.name} className="sprite-sky" style={{ textAlign: "center" }}>
+                    <img src={c.img} alt={`${c.name.toLowerCase()} robot`} style={{ width: 56, height: 56, objectFit: "contain" }} />
+                    <div className="pixel" style={{ fontSize: 8, color: "var(--muted)", marginTop: 6 }}>{c.name}</div>
+                  </div>
+                ))}
+              </div>
+              <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "18px 0 12px" }}>
+                One more image you'll see isn't an agent state at all. In the activity feed on the
+                dashboard, a damaged red robot marks a <strong>misuse signal</strong> — security events
+                like pairing-token reuse or a credential fingerprint mismatch:
+              </p>
+              <div
+                className="pixel-panel-sm mono"
+                style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 10, background: "#FFF1F1", maxWidth: 420 }}
+              >
+                <img src={misuseIcon} alt="" style={{ width: 22, height: 22, objectFit: "contain" }} />
+                <span style={{ fontSize: 12, fontWeight: 700, color: "var(--danger-dark)" }}>Misuse detected — check this event.</span>
               </div>
             </Section>
 
