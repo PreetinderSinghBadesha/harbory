@@ -10,6 +10,7 @@ pub enum AuditEventType {
     PairingTokenExpired,
     CredentialFingerprintMismatch,
     AgentRevoked,
+    AgentDeleted,
     GitHubConnected,
     GitHubDisconnected,
 }
@@ -22,6 +23,7 @@ impl AuditEventType {
             Self::PairingTokenExpired => "pairing_token_expired",
             Self::CredentialFingerprintMismatch => "credential_fingerprint_mismatch",
             Self::AgentRevoked => "agent_revoked",
+            Self::AgentDeleted => "agent_deleted",
             Self::GitHubConnected => "github_connected",
             Self::GitHubDisconnected => "github_disconnected",
         }

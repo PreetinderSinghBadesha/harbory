@@ -10,7 +10,8 @@ use harbory_protocol::{
         agent_message::Payload as AgentPayload, agent_stream_service_server::AgentStreamService,
         container_command::Action as ContainerAction, control_plane_message::Payload as ControlPlanePayload,
         AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, GitSource as ProtoGitSource,
-        Heartbeat as HeartbeatMsg, HeartbeatAck, LogsResponse, PortMapping as ProtoPortMapping, ProxyConfig, Welcome,
+        Heartbeat as HeartbeatMsg, HeartbeatAck, ImagesResponse, LogsResponse, PortMapping as ProtoPortMapping,
+        ProxyConfig, Welcome,
     },
 };
 use rand::RngCore;
@@ -34,13 +35,14 @@ pub struct AgentStreamServiceImpl {
 }
 
 /// Tracks all currently-connected agents so the HTTP layer can forward
-/// one-off requests (e.g. log fetches) into the live stream without
-/// needing a separate connection or a new gRPC RPC.
+/// one-off requests (e.g. log fetches, image listings) into the live
+/// stream without needing a separate connection or a new gRPC RPC.
 ///
 /// Structure per agent:
-///   outbound   — send messages down the stream to the agent
-///   pending_logs — map of request_id → oneshot::Sender waiting for
-///                  the agent's LogsResponse
+///   outbound      — send messages down the stream to the agent
+///   pending_logs  — map of request_id → oneshot::Sender waiting for
+///                   the agent's LogsResponse
+///   pending_images — same pattern for ImagesResponse
 #[derive(Clone, Default)]
 pub struct ConnectionRegistry {
     inner: Arc<Mutex<HashMap<Uuid, ConnectedAgent>>>,
@@ -49,6 +51,7 @@ pub struct ConnectionRegistry {
 struct ConnectedAgent {
     outbound: mpsc::Sender<Result<ControlPlaneMessage, Status>>,
     pending_logs: HashMap<String, oneshot::Sender<LogsResponse>>,
+    pending_images: HashMap<String, oneshot::Sender<ImagesResponse>>,
 }
 
 impl ConnectionRegistry {
@@ -57,11 +60,26 @@ impl ConnectionRegistry {
     }
 
     async fn register(&self, agent_id: Uuid, outbound: mpsc::Sender<Result<ControlPlaneMessage, Status>>) {
-        self.inner.lock().await.insert(agent_id, ConnectedAgent { outbound, pending_logs: HashMap::new() });
+        self.inner.lock().await.insert(
+            agent_id,
+            ConnectedAgent { outbound, pending_logs: HashMap::new(), pending_images: HashMap::new() },
+        );
     }
 
     async fn deregister(&self, agent_id: Uuid) {
         self.inner.lock().await.remove(&agent_id);
+    }
+
+    /// Force-closes an agent's live connection (used when the agent is
+    /// deleted): drops its registry entry and sends an error frame so the
+    /// server-side stream loop breaks instead of continuing to reconcile
+    /// against now-deleted desired state. The agent can't reconnect —
+    /// its credential no longer verifies once the row is gone.
+    pub async fn kick(&self, agent_id: Uuid) {
+        let mut guard = self.inner.lock().await;
+        if let Some(conn) = guard.remove(&agent_id) {
+            let _ = conn.outbound.send(Err(Status::unavailable("agent deleted"))).await;
+        }
     }
 
     /// Send a `LogsRequest` to a connected agent and return a `Receiver`
@@ -93,12 +111,48 @@ impl ConnectionRegistry {
         Some(rx)
     }
 
+    /// Send an `ImagesRequest` (list-only, or remove-then-list when
+    /// `remove_image_id` is set) — same pattern as `request_logs`.
+    pub async fn request_images(
+        &self,
+        agent_id: Uuid,
+        request_id: String,
+        remove_image_id: String,
+    ) -> Option<oneshot::Receiver<ImagesResponse>> {
+        let mut guard = self.inner.lock().await;
+        let conn = guard.get_mut(&agent_id)?;
+        let (tx, rx) = oneshot::channel();
+        conn.pending_images.insert(request_id.clone(), tx);
+        let msg = ControlPlaneMessage {
+            payload: Some(ControlPlanePayload::ImagesRequest(harbory_protocol::v1::ImagesRequest {
+                request_id: request_id.clone(),
+                remove_image_id,
+            })),
+        };
+        if conn.outbound.send(Ok(msg)).await.is_err() {
+            conn.pending_images.remove(&request_id);
+            return None;
+        }
+        Some(rx)
+    }
+
     /// Resolve a pending log request. Called by `drive_connection` when
     /// the agent sends a `LogsResponse`.
     async fn resolve_logs(&self, agent_id: Uuid, response: LogsResponse) {
         let mut guard = self.inner.lock().await;
         if let Some(conn) = guard.get_mut(&agent_id) {
             if let Some(tx) = conn.pending_logs.remove(&response.request_id) {
+                let _ = tx.send(response);
+            }
+        }
+    }
+
+    /// Resolve a pending images request. Called by `drive_connection` when
+    /// the agent sends an `ImagesResponse`.
+    async fn resolve_images(&self, agent_id: Uuid, response: ImagesResponse) {
+        let mut guard = self.inner.lock().await;
+        if let Some(conn) = guard.get_mut(&agent_id) {
+            if let Some(tx) = conn.pending_images.remove(&response.request_id) {
                 let _ = tx.send(response);
             }
         }
@@ -507,6 +561,9 @@ async fn drive_connection(
             }
             Some(Ok(AgentMessage { payload: Some(AgentPayload::LogsResponse(resp)) })) => {
                 registry.resolve_logs(agent_id, resp).await;
+            }
+            Some(Ok(AgentMessage { payload: Some(AgentPayload::ImagesResponse(resp)) })) => {
+                registry.resolve_images(agent_id, resp).await;
             }
             Some(Ok(_)) => {
                 tracing::debug!(%agent_id, "ignoring unexpected message after handshake");

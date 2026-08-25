@@ -52,6 +52,7 @@ message AgentMessage {
     ProxyState proxy_state = 5;
     LogsResponse logs_response = 6;
     ComposeStateReport compose_state_report = 7;
+    ImagesResponse images_response = 8;
   }
 }
 
@@ -64,6 +65,7 @@ message ControlPlaneMessage {
     ProxyConfig proxy_config = 5;
     LogsRequest logs_request = 6;
     ComposeCommand compose_command = 7;
+    ImagesRequest images_request = 8;
   }
 }
 
@@ -271,5 +273,47 @@ message LogsResponse {
   string logs = 2;
   // Populated if the container doesn't exist, hasn't started, or Docker
   // failed to retrieve logs for any reason.
+  string error = 3;
+}
+
+// --- Images: list & remove -------------------------------------------------
+//
+// Same fire-and-forget request/response pattern as LogsRequest/LogsResponse:
+// the control plane sends ImagesRequest with a unique request_id over the
+// agent's live stream; the agent replies with ImagesResponse carrying that
+// id, matched back to the waiting HTTP handler via a oneshot channel.
+//
+// One message covers both "list" and "remove-then-list": remove_image_id
+// empty means list-only; set means "delete that image first, then return
+// the fresh list" so the UI updates in a single round trip.
+
+message ImagesRequest {
+  string request_id = 1;
+  // Docker image ID (the sha256:... digest or its hex) to delete before
+  // re-listing. Empty = plain list. Refusing to multiplex more than one
+  // removal per request keeps the failure story simple.
+  string remove_image_id = 2;
+}
+
+message ImageInfo {
+  // Docker's image ID (sha256 hex) — the stable handle for removal.
+  string id = 1;
+  // All tags (and dangling digests) pointing at this image; possibly empty
+  // for dangling images.
+  repeated string repo_tags = 2;
+  int64 size_bytes = 3;
+  // Image creation time, unix seconds.
+  int64 created_at = 4;
+  // True when at least one container on this host (running or stopped)
+  // is based on this image — such images can't be removed without
+  // removing the container first, so the UI can disable the button.
+  bool in_use = 5;
+}
+
+message ImagesResponse {
+  string request_id = 1;
+  repeated ImageInfo images = 2;
+  // Populated when the list or a requested removal failed; images may
+  // still carry a partial/previous listing when a removal failed.
   string error = 3;
 }

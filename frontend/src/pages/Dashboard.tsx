@@ -37,6 +37,7 @@ const EVENT_LABELS: Record<string, string> = {
   pairing_token_expired: "Expired pairing token used",
   credential_fingerprint_mismatch: "Credential fingerprint mismatch",
   agent_revoked: "Agent revoked",
+  agent_deleted: "Agent deleted",
   github_connected: "GitHub account connected",
   github_disconnected: "GitHub account disconnected",
 };
@@ -163,10 +164,17 @@ export function Dashboard() {
     },
   });
 
+  // "Revoke" on the dashboard matches the agent page: it deletes the agent
+  // outright (DELETE /agents/:id), so it always goes through a confirm.
   const revoke = useMutation({
-    mutationFn: (agentId: string) => apiFetch<void>(`/agents/${agentId}/revoke`, { method: "POST" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agents"] }),
+    mutationFn: (agentId: string) => apiFetch<void>(`/agents/${agentId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      setConfirmRevokeId(null);
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+    onError: () => setConfirmRevokeId(null),
   });
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
 
   const { data: securityEvents } = useQuery({
     queryKey: ["security-events"],
@@ -312,8 +320,7 @@ export function Dashboard() {
                       type="button"
                       className="pixel-btn pixel-btn-danger pixel-btn-sm"
                       style={{ marginTop: 10 }}
-                      onClick={() => revoke.mutate(a.id)}
-                      disabled={revoke.isPending}
+                      onClick={() => setConfirmRevokeId(a.id)}
                     >
                       REVOKE
                     </button>
@@ -440,6 +447,53 @@ export function Dashboard() {
           )}
         </section>
       </main>
+
+      {confirmRevokeId && (
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setConfirmRevokeId(null);
+          }}
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.72)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+          }}
+        >
+          <div className="pixel-panel" style={{ width: "100%", maxWidth: 480, padding: "24px 26px", background: "var(--panel)" }}>
+            <div className="eyebrow">REVOKE AGENT</div>
+            <p className="mono" style={{ fontSize: 12.5, lineHeight: 1.7, margin: "10px 0 20px" }}>
+              Revoke and permanently delete agent {confirmRevokeId.slice(0, 8)}? All of its stored state is removed
+              from the database and its connection is cut. This can't be undone.
+            </p>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                onClick={() => setConfirmRevokeId(null)}
+                disabled={revoke.isPending}
+              >
+                CANCEL
+              </button>
+              <button
+                type="button"
+                className="pixel-btn pixel-btn-danger"
+                onClick={() => revoke.mutate(confirmRevokeId)}
+                disabled={revoke.isPending}
+                autoFocus
+              >
+                {revoke.isPending ? "WORKING…" : "REVOKE & DELETE"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ mod backoff;
 mod compose;
 mod container;
 mod git_build;
+mod images;
 mod proxy;
 mod stream;
 mod transport;
@@ -67,6 +68,11 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "/etc/nginx/conf.d/harbory.conf".into());
     let proxy = Arc::new(ProxyManager::new(nginx_binary, nginx_config_path));
 
+    // Image listing/removal — same Docker daemon, served on demand over the
+    // stream like log fetches; not a startup requirement beyond Docker
+    // itself (already verified above).
+    let images = Arc::new(images::ImagesManager::connect()?);
+
     // Transient disconnects (network blips, control-plane restarts) don't
     // require re-pairing — this loop just keeps reusing the stored
     // credential and identity, per the security model.
@@ -79,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
             containers.clone(),
             compose.clone(),
             proxy.clone(),
+            images.clone(),
         )
         .await
         {

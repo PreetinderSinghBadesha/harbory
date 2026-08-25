@@ -82,9 +82,12 @@ pub fn router(state: AppState) -> Router {
         .route("/agents", get(list_agents))
         .route("/security-events", get(list_security_events))
         .route("/agents/:agent_id/revoke", post(revoke_agent))
+        .route("/agents/:agent_id", delete(delete_agent_handler))
         .route("/agents/:agent_id/containers", get(list_containers))
         .route("/agents/:agent_id/containers/:name", put(put_container).delete(delete_container))
         .route("/agents/:agent_id/containers/:name/logs", get(get_container_logs))
+        .route("/agents/:agent_id/images", get(list_images))
+        .route("/agents/:agent_id/images/:image_id", delete(delete_image))
         .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
         .route("/agents/:agent_id/proxy-routes/:name", put(put_proxy_route).delete(delete_proxy_route))
         .route("/agents/:agent_id/compose-stacks", get(list_compose_stacks))
@@ -245,6 +248,32 @@ async fn revoke_agent(
     })?;
 
     if revoked {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+/// Permanently deletes the agent and everything scoped to it (desired/
+/// observed state, proxy routes, compose stacks — see
+/// `Store::delete_agent` for the full list). Also kicks any live stream
+/// immediately so the deleted agent stops receiving reconcile commands;
+/// it can never reconnect, since its credential no longer verifies.
+/// 404 if the agent doesn't exist / isn't yours.
+async fn delete_agent_handler(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Path(agent_id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let deleted = state.store.delete_agent(agent_id).await.map_err(|err| {
+        tracing::error!(?err, "failed to delete agent");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if deleted.is_some() {
+        state.registry.kick(agent_id).await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(StatusCode::NOT_FOUND)
@@ -887,5 +916,79 @@ async fn get_container_logs(
             Err(StatusCode::GATEWAY_TIMEOUT)
         }
     }
+}
+
+#[derive(Serialize)]
+struct ImageInfoDto {
+    id: String,
+    repo_tags: Vec<String>,
+    size_bytes: i64,
+    created_at: i64,
+    in_use: bool,
+}
+
+#[derive(Serialize)]
+struct ImagesDto {
+    images: Vec<ImageInfoDto>,
+    // Populated when the agent failed to list, or a removal was requested
+    // and failed — the caller gets whatever fresh listing exists plus the
+    // reason, instead of a bare status code with no detail.
+    error: String,
+}
+
+/// Forwards an images request over the agent's live stream — list-only for
+/// GET, remove-then-list for DELETE (the refreshed list doubles as the
+/// delete's response so the UI updates in one round trip).
+///
+/// 503 — agent has no live connection; 504 — no reply within 5 seconds.
+async fn images_via_stream(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    agent_id: Uuid,
+    remove_image_id: String,
+) -> Result<Json<ImagesDto>, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let request_id = Uuid::new_v4().to_string();
+    let rx = state
+        .registry
+        .request_images(agent_id, request_id, remove_image_id)
+        .await
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(Json(ImagesDto {
+            error: resp.error,
+            images: resp
+                .images
+                .into_iter()
+                .map(|i| ImageInfoDto {
+                    id: i.id,
+                    repo_tags: i.repo_tags,
+                    size_bytes: i.size_bytes,
+                    created_at: i.created_at,
+                    in_use: i.in_use,
+                })
+                .collect(),
+        })),
+        Ok(Err(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
+    }
+}
+
+async fn list_images(
+    state: State<AppState>,
+    account: AuthenticatedAccount,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<ImagesDto>, StatusCode> {
+    images_via_stream(state, account, agent_id, String::new()).await
+}
+
+async fn delete_image(
+    state: State<AppState>,
+    account: AuthenticatedAccount,
+    Path((agent_id, image_id)): Path<(Uuid, String)>,
+) -> Result<Json<ImagesDto>, StatusCode> {
+    images_via_stream(state, account, agent_id, image_id).await
 }
 

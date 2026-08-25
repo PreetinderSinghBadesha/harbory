@@ -93,4 +93,61 @@ impl Store {
             .await;
         Ok(true)
     }
+
+    /// Permanently removes an agent and everything scoped to it. Nothing
+    /// in the schema cascades, so every referencing table is cleaned up
+    /// explicitly in one transaction: desired/observed containers, proxy
+    /// routes + state, compose stacks, and — for the two nullable
+    /// references worth keeping history for — audit_log and pairing
+    /// tokens get their agent_id NULLed rather than deleted, so the
+    /// security trail survives the agent itself. Returns the owning
+    /// account id (for the post-delete audit event, which references the
+    /// deleted agent only through its detail JSON since the row is gone),
+    /// or None if no agent by that id existed.
+    pub async fn delete_agent(&self, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("UPDATE audit_log SET agent_id = NULL WHERE agent_id = $1")
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE pairing_tokens SET consumed_by_agent_id = NULL WHERE consumed_by_agent_id = $1")
+            .bind(agent_id)
+            .execute(&mut *tx)
+            .await?;
+        for table in [
+            "desired_containers",
+            "observed_containers",
+            "desired_proxy_routes",
+            "proxy_state",
+            "desired_compose_stacks",
+            "observed_compose_stacks",
+        ] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE agent_id = $1"))
+                .bind(agent_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        let account_id = sqlx::query_scalar::<_, Uuid>(
+            "DELETE FROM agents WHERE id = $1 RETURNING account_id",
+        )
+        .bind(agent_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        if let Some(account_id) = account_id {
+            let _ = self
+                .record_audit_event(
+                    AuditEventType::AgentDeleted,
+                    Some(account_id),
+                    None,
+                    serde_json::json!({ "deleted_agent_id": agent_id.to_string() }),
+                )
+                .await;
+        }
+        Ok(account_id)
+    }
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, type FormEvent, type ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
 import { situationFor, spriteFor } from "../lib/agentSprite";
@@ -69,12 +69,25 @@ interface ContainerLogsDto {
   error: string;
 }
 
+interface AgentImage {
+  id: string;
+  repo_tags: string[];
+  size_bytes: number;
+  created_at: number;
+  in_use: boolean;
+}
+interface ImagesDto {
+  images: AgentImage[];
+  error: string;
+}
+
 type DeployTab = "container" | "compose";
 
 type PendingAction =
   | { kind: "container"; name: string }
   | { kind: "compose"; name: string }
   | { kind: "route"; name: string }
+  | { kind: "image"; id: string; label: string }
   | { kind: "revoke" };
 
 function confirmCopy(action: PendingAction): { title: string; message: string; confirmLabel: string } {
@@ -97,11 +110,18 @@ function confirmCopy(action: PendingAction): { title: string; message: string; c
         message: `Remove proxy route "${action.name}"? Traffic to ${action.name} will stop being proxied after the next heartbeat.`,
         confirmLabel: "REMOVE",
       };
+    case "image":
+      return {
+        title: "DELETE IMAGE",
+        message: `Delete image ${action.label}? It will be removed from this host's Docker storage and re-downloaded on the next deploy that needs it.`,
+        confirmLabel: "DELETE",
+      };
     case "revoke":
       return {
         title: "REVOKE AGENT",
-        message: "Revoke this agent? Its access is cut off permanently — you'll need to pair a brand-new agent.",
-        confirmLabel: "REVOKE",
+        message:
+          "Revoke and permanently delete this agent? All of its stored state — containers, stacks, proxy routes — is removed from the database and its live connection is cut. The host itself keeps running; pair a new agent to manage it again. This can't be undone.",
+        confirmLabel: "REVOKE & DELETE",
       };
   }
 }
@@ -401,6 +421,16 @@ function EmptyHint({ children }: { children: ReactNode }) {
   );
 }
 
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function imageLabel(img: AgentImage): string {
+  return img.repo_tags[0] ?? img.id.replace(/^sha256:/, "").slice(0, 12);
+}
+
 function Field({ label, optional, children }: { label: string; optional?: boolean; children: ReactNode }) {
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 5, flex: "1 1 150px", minWidth: 0 }}>
@@ -482,6 +512,7 @@ function EnvVarsEditor({
 
 export function AgentDetail() {
   const { agentId } = useParams<{ agentId: string }>();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const [logsModal, setLogsModal] = useState<{ containerName: string } | null>(null);
@@ -506,12 +537,13 @@ export function AgentDetail() {
   const situation = agent ? situationFor(agent) : "offline";
   const isRevoked = situation === "revoked";
 
+  // "Revoke" deletes the agent outright — the DB row and all scoped state
+  // go with it (see DELETE /agents/:id), and its live connection is kicked.
   const revoke = useMutation({
-    mutationFn: () => apiFetch<void>(`/agents/${agentId}/revoke`, { method: "POST" }),
+    mutationFn: () => apiFetch<void>(`/agents/${agentId}`, { method: "DELETE" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
-      setNotice({ text: "Agent revoked.", tone: "info" });
-      setConfirmAction(null);
+      navigate("/dashboard");
     },
     onError: (error) => {
       setNotice({ text: `Couldn't revoke agent: ${(error as Error).message}`, tone: "error" });
@@ -654,8 +686,7 @@ export function AgentDetail() {
   const [listenPort, setListenPort] = useState(80);
   const [upstreamHost, setUpstreamHost] = useState("127.0.0.1");
   const [upstreamPort, setUpstreamPort] = useState(8080);
-  const deployRoute = useMutation({
-    mutationFn: () =>
+  const deployRoute = useMutation({    mutationFn: () =>
       apiFetch<void>(`/agents/${agentId}/proxy-routes/${encodeURIComponent(routeName.trim())}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -686,6 +717,30 @@ export function AgentDetail() {
     },
   });
 
+  const images = useQuery({
+    queryKey: ["images", agentId],
+    queryFn: () => apiFetch<ImagesDto>(`/agents/${agentId}/images`),
+    staleTime: 0,
+    refetchInterval: 20000,
+  });
+  const deleteImage = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<ImagesDto>(`/agents/${agentId}/images/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["images", agentId], data);
+      if (data.error) {
+        setNotice({ text: data.error, tone: "error" });
+      } else {
+        setNotice({ text: "Image deleted.", tone: "info" });
+      }
+      setConfirmAction(null);
+    },
+    onError: (error) => {
+      setNotice({ text: `Couldn't delete image: ${(error as Error).message}`, tone: "error" });
+      setConfirmAction(null);
+    },
+  });
+
   function handleDeployContainer(e: FormEvent) {
     e.preventDefault();
     deployContainer.mutate();
@@ -711,6 +766,9 @@ export function AgentDetail() {
       case "route":
         removeRoute.mutate(confirmAction.name);
         break;
+      case "image":
+        deleteImage.mutate(confirmAction.id);
+        break;
       case "revoke":
         revoke.mutate();
         break;
@@ -733,6 +791,7 @@ export function AgentDetail() {
     removeContainer.isPending ||
     removeComposeStack.isPending ||
     removeRoute.isPending ||
+    deleteImage.isPending ||
     revoke.isPending;
 
   return (
@@ -824,7 +883,7 @@ export function AgentDetail() {
                     ))}
                   </div>
                 )}
-                {agent?.status === "active" && (
+                {agent && (
                   <button
                     type="button"
                     className="pixel-btn pixel-btn-danger"
@@ -1106,7 +1165,14 @@ export function AgentDetail() {
                             )}
                           </td>
                           <td>
-                            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                              <button
+                                type="button"
+                                className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                                onClick={() => setLogsModal({ containerName: d.name })}
+                              >
+                                LOGS
+                              </button>
                               <button
                                 type="button"
                                 className="pixel-btn pixel-btn-danger pixel-btn-sm"
@@ -1277,6 +1343,89 @@ export function AgentDetail() {
               {deployRoute.isError && <div className="alert-row">{(deployRoute.error as Error).message}</div>}
             </form>
           </CollapsibleForm>
+        </SectionPanel>
+
+        <SectionPanel
+          title="IMAGES"
+          count={images.data ? images.data.images.length : undefined}
+          action={
+            <button
+              type="button"
+              className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+              onClick={() => images.refetch()}
+              disabled={images.isFetching}
+            >
+              {images.isFetching ? "…" : "↺ REFRESH"}
+            </button>
+          }
+        >
+          {images.data?.error && <div className="alert-row">{images.data.error}</div>}
+          {images.isLoading && <EmptyHint>Loading images…</EmptyHint>}
+          {images.isError && (
+            <div className="alert-row">Couldn't load images — retrying… ({(images.error as Error).message})</div>
+          )}
+          {images.data && !images.data.error && images.data.images.length === 0 && (
+            <EmptyHint>No images on this host yet.</EmptyHint>
+          )}
+          {images.data && images.data.images.length > 0 && (
+            <table>
+              <thead>
+                <tr>
+                  <th>IMAGE</th>
+                  <th>SIZE</th>
+                  <th>CREATED</th>
+                  <th>STATUS</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {images.data.images.map((img) => {
+                  const label = imageLabel(img);
+                  return (
+                    <tr key={img.id}>
+                      <td>
+                        <div style={{ fontWeight: 700, wordBreak: "break-all" }}>{label}</div>
+                        {(img.repo_tags.length > 1 || img.repo_tags.length === 0) && (
+                          <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
+                            {img.repo_tags.length > 1
+                              ? `+${img.repo_tags.length - 1} more tag${img.repo_tags.length === 2 ? "" : "s"}`
+                              : "dangling"}
+                          </div>
+                        )}
+                      </td>
+                      <td>{formatSize(img.size_bytes)}</td>
+                      <td>{new Date(img.created_at * 1000).toLocaleDateString()}</td>
+                      <td>
+                        <span
+                          className="badge"
+                          style={
+                            img.in_use
+                              ? { background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }
+                              : { background: "#F3F0EA", color: "#8A7E72", borderColor: "#8A7E72" }
+                          }
+                        >
+                          {img.in_use ? "IN USE" : "UNUSED"}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                          <button
+                            type="button"
+                            className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                            onClick={() => setConfirmAction({ kind: "image", id: img.id, label })}
+                            disabled={img.in_use}
+                            title={img.in_use ? "Stop/remove the containers using this image first" : undefined}
+                          >
+                            DELETE
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </SectionPanel>
       </main>
 

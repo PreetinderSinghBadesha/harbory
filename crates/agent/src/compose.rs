@@ -100,33 +100,160 @@ impl ComposeManager {
     }
 
     pub async fn remove(&self, name: &str) -> Result<(), DeployError> {
-        tracing::info!(%name, "running docker compose down");
-        
-        let output = Command::new("docker")
-            .arg("compose")
-            .arg("-p")
-            .arg(name)
-            .arg("down")
-            .arg("-v")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await?;
+        let work_dir = PathBuf::from("/var/lib/harbory-agent").join("compose").join(name);
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!(%name, stderr = %stderr, "docker compose down returned non-zero");
+        // Preferred path: run `down` from the project's own directory, where
+        // compose can find its compose file. Running it bare (`-p name` from
+        // an unrelated cwd) fails for *running* projects with "no
+        // configuration file provided" — which is exactly why removals of
+        // running stacks used to silently no-op while stopped ones (which
+        // compose can resolve from container labels alone) went through.
+        if work_dir.exists() {
+            let output = Command::new("docker")
+                .arg("compose")
+                .arg("-p")
+                .arg(name)
+                .arg("down")
+                .arg("-v")
+                .current_dir(&work_dir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::warn!(%name, stderr = %stderr, "compose down from project dir failed, falling back to label sweep");
+                self.label_sweep_remove(name).await;
+            }
+        } else {
+            // Work dir already gone (e.g. removed by hand) — the containers
+            // may still be running, so sweep by project label.
+            self.label_sweep_remove(name).await;
         }
 
         self.errors.lock().await.remove(name);
-        
+
         // Clean up the working directory
-        let work_dir = PathBuf::from("/var/lib/harbory-agent").join("compose").join(name);
         if work_dir.exists() {
             let _ = tokio::fs::remove_dir_all(&work_dir).await;
         }
 
         Ok(())
+    }
+
+    /// File-less removal: every resource compose creates carries the
+    /// `com.docker.compose.project` label, so force-removing by label
+    /// converges even without any compose file on disk. Best-effort per
+    /// resource type — a failure on one shouldn't block the others.
+    async fn label_sweep_remove(&self, name: &str) {
+        let project_label = format!("com.docker.compose.project={name}");
+
+        if let Err(err) = self
+            .sweep_resources(&["ps", "-aq", "--filter", &format!("label={project_label}")], &["rm", "-f"])
+            .await
+        {
+            tracing::warn!(%name, %err, "label sweep: failed to remove compose containers");
+        }
+
+        if let Err(err) = self
+            .sweep_resources(&["network", "ls", "-q", "--filter", &format!("label={project_label}")], &["network", "rm"])
+            .await
+        {
+            tracing::warn!(%name, %err, "label sweep: failed to remove compose networks");
+        }
+
+        if let Err(err) = self
+            .sweep_resources(&["volume", "ls", "-q", "--filter", &format!("label={project_label}")], &["volume", "rm"])
+            .await
+        {
+            tracing::warn!(%name, %err, "label sweep: failed to remove compose volumes");
+        }
+    }
+
+    /// Runs `docker <list_args>` and force-runs `docker <verb_args...> <id>`
+    /// on each id it yields. Best-effort per id — one stuck resource
+    /// shouldn't block the rest of the sweep.
+    async fn sweep_resources(&self, list_args: &[&str], verb_args: &[&str]) -> Result<(), DeployError> {
+        let listed = Command::new("docker")
+            .args(list_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    DeployError::Command("'docker' executable not found on this host.".into())
+                } else {
+                    DeployError::Io(e)
+                }
+            })?;
+
+        if !listed.status.success() {
+            return Err(DeployError::Command(format!(
+                "docker {} failed: {}",
+                list_args.join(" "),
+                String::from_utf8_lossy(&listed.stderr)
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&listed.stdout).to_string();
+        let ids: Vec<&str> = stdout.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+
+        for id in ids {
+            let mut cmd = Command::new("docker");
+            for arg in verb_args {
+                cmd.arg(arg);
+            }
+            let output = cmd
+                .arg(id)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .map_err(DeployError::Io)?;
+            if !output.status.success() {
+                tracing::warn!(
+                    id = %id,
+                    stderr = %String::from_utf8_lossy(&output.stderr),
+                    "docker {} failed for one resource",
+                    verb_args.join(" ")
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Recent combined logs for a whole stack (`docker compose logs`).
+    /// Run from the project dir when it still exists so compose can find
+    /// its file; bare `-p name` works when the project's containers carry
+    /// their compose labels even without one.
+    pub async fn logs(&self, name: &str, tail: u32) -> Result<String, String> {
+        let tail_str = if tail == 0 { "100".to_string() } else { tail.to_string() };
+        let work_dir = PathBuf::from("/var/lib/harbory-agent").join("compose").join(name);
+
+        let mut cmd = Command::new("docker");
+        cmd.args(["compose", "-p", name, "logs", "--tail", &tail_str]);
+        if work_dir.exists() {
+            cmd.current_dir(&work_dir);
+        }
+        let output = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    "'docker' executable not found on this host.".to_string()
+                } else {
+                    format!("failed to run docker compose logs: {e}")
+                }
+            })?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     pub async fn list_state(&self) -> Result<Vec<ComposeState>, std::io::Error> {

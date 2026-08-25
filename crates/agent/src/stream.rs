@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 
 use crate::container::ContainerManager;
+use crate::images::ImagesManager;
 use crate::proxy::ProxyManager;
 
 /// What this agent believes it has last (successfully or not) applied to
@@ -81,6 +82,7 @@ pub async fn run_stream(
     containers: Arc<ContainerManager>,
     compose: Arc<crate::compose::ComposeManager>,
     proxy: Arc<ProxyManager>,
+    images: Arc<ImagesManager>,
 ) -> anyhow::Result<()> {
     let channel = crate::transport::connect(control_plane_addr).await?;
     let mut client = AgentStreamServiceClient::new(channel);
@@ -229,12 +231,24 @@ pub async fn run_stream(
                             }
                             Some(ControlPlanePayload::LogsRequest(req)) => {
                                 let containers = containers.clone();
+                                let compose = compose.clone();
                                 let task_tx = tx.clone();
                                 tokio::spawn(async move {
-                                    let result = containers.logs(&req.container_name, req.tail_lines).await;
+                                    // Containers first; if that lookup fails, the name
+                                    // may belong to a compose stack rather than a single
+                                    // container — try compose logs before giving up. The
+                                    // container-side error is the one surfaced when both
+                                    // paths fail, since that's the more specific miss.
+                                    let result = match containers.logs(&req.container_name, req.tail_lines).await {
+                                        Ok(text) => Ok(text),
+                                        Err(container_err) => match compose.logs(&req.container_name, req.tail_lines).await {
+                                            Ok(text) => Ok(text),
+                                            Err(_) => Err(container_err.to_string()),
+                                        },
+                                    };
                                     let (logs, error) = match result {
                                         Ok(text) => (text, String::new()),
-                                        Err(err) => (String::new(), err.to_string()),
+                                        Err(err) => (String::new(), err),
                                     };
                                     let resp = AgentMessage {
                                         payload: Some(harbory_protocol::v1::agent_message::Payload::LogsResponse(
@@ -243,6 +257,31 @@ pub async fn run_stream(
                                     };
                                     if task_tx.send(resp).await.is_err() {
                                         tracing::warn!("outbound channel closed while sending logs response");
+                                    }
+                                });
+                            }
+                            Some(ControlPlanePayload::ImagesRequest(req)) => {
+                                let images = images.clone();
+                                let task_tx = tx.clone();
+                                tokio::spawn(async move {
+                                    let result = async {
+                                        if !req.remove_image_id.is_empty() {
+                                            images.remove(&req.remove_image_id).await.map_err(|e| e.to_string())?;
+                                        }
+                                        images.list().await.map_err(|e| e.to_string())
+                                    }
+                                    .await;
+                                    let (imgs, error) = match result {
+                                        Ok(list) => (list, String::new()),
+                                        Err(err) => (Vec::new(), err),
+                                    };
+                                    let resp = AgentMessage {
+                                        payload: Some(harbory_protocol::v1::agent_message::Payload::ImagesResponse(
+                                            harbory_protocol::v1::ImagesResponse { request_id: req.request_id, images: imgs, error },
+                                        )),
+                                    };
+                                    if task_tx.send(resp).await.is_err() {
+                                        tracing::warn!("outbound channel closed while sending images response");
                                     }
                                 });
                             }
