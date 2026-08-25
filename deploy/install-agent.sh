@@ -64,15 +64,30 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 1
 fi
 
+MISSING_PKGS=()
 if ! command -v nginx >/dev/null 2>&1; then
   log "nginx not found. Attempting to install..."
+  MISSING_PKGS+=(nginx)
+fi
+if ! command -v git >/dev/null 2>&1; then
+  log "git not found. Installing it too — git-sourced container deploys shell out to it."
+  MISSING_PKGS+=(git)
+fi
+
+if [ "${#MISSING_PKGS[@]}" -gt 0 ]; then
   if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y nginx
+    # A single stale third-party repo/PPA makes `apt-get update` fail
+    # wholesale even when everything we need is fetchable from healthy
+    # repos — treat an update failure as a warning and let the actual
+    # install step be the thing that decides success or failure.
+    if ! sudo apt-get update; then
+      echo "WARNING: 'apt-get update' failed (often a broken third-party PPA) — attempting install anyway" >&2
+    fi
+    sudo apt-get install -y "${MISSING_PKGS[@]}"
   elif command -v yum >/dev/null 2>&1; then
-    sudo yum install -y nginx
+    sudo yum install -y "${MISSING_PKGS[@]}"
   else
-    echo "Could not automatically install nginx. Please install it manually first." >&2
+    echo "Could not automatically install: ${MISSING_PKGS[*]}. Please install them manually first." >&2
     exit 1
   fi
 fi
