@@ -341,6 +341,7 @@ export function Landing() {
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 22 }}>
+            <a href="mailto:preetindersingh13per@gmail.com" style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>preetindersingh13per@gmail.com</a>
             <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>GitHub</a>
             <Link to="/docs" style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>Docs</Link>
             <Link to="/dashboard" style={{ fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>Dashboard</Link>
