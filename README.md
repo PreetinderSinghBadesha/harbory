@@ -24,26 +24,6 @@ Harbory is a self-hosted control plane and lightweight agent, written entirely i
 - 🕹️ **Real-time dashboard** — online/offline status, deployment status, and an audit log of security-relevant events
 - 🔑 **Flexible sign-in** — email/password, GitHub, or Google, via Supabase
 
-## Screenshots
-
-![Deploy tab](docs/screenshots/deploy.png)
-![Agent detail — Containers](docs/screenshots/agent-detail.png)
-![Dashboard](docs/screenshots/dashboard.png)
-
-## Architecture
-
-One control plane, many agents, coordinated over a single persistent, authenticated gRPC stream — each agent runs commands and reports state on its own VM.
-
-![Architecture](docs/screenshots/architecture.png)
-
-| Component | Responsibility |
-|---|---|
-| **Control plane** | Web dashboard, accounts/auth, pairing tokens, agent registry, command dispatch, reconciliation, state storage |
-| **Agent** | Runs on each managed VM — container/Compose lifecycle, Nginx reverse proxy, heartbeats, state reporting |
-| **`protocol` crate** | Shared gRPC service and message definitions — the single source of truth for the wire protocol between control plane and agent |
-
-Every desired-state change (deploy a container, add a route) converges through a reconciliation loop, not a one-shot command — a crashed container or a dropped connection heals itself on the next report instead of needing manual intervention.
-
 ## Quickstart
 
 **1. Run the control plane**
@@ -64,6 +44,26 @@ sudo harbory-agent-pair <pairing-token>
 ```
 
 Full install rationale (why the agent needs `sudo`, how nginx permissions are scoped, GitHub deploy setup) lives in [deploy/README.md](deploy/README.md).
+
+## Screenshots
+
+![Deploy tab](docs/screenshots/deploy.png)
+![Agent detail — Containers](docs/screenshots/agent-detail.png)
+![Dashboard](docs/screenshots/dashboard.png)
+
+## Architecture
+
+One control plane, many agents, coordinated over a single persistent, authenticated gRPC stream — each agent runs commands and reports state on its own VM.
+
+![Architecture](docs/screenshots/architecture.png)
+
+| Component | Responsibility |
+|---|---|
+| **Control plane** | Web dashboard, accounts/auth, pairing tokens, agent registry, command dispatch, reconciliation, state storage |
+| **Agent** | Runs on each managed VM — container/Compose lifecycle, Nginx reverse proxy, heartbeats, state reporting |
+| **`protocol` crate** | Shared gRPC service and message definitions — the single source of truth for the wire protocol between control plane and agent |
+
+Every desired-state change (deploy a container, add a route) converges through a reconciliation loop, not a one-shot command — a crashed container or a dropped connection heals itself on the next report instead of needing manual intervention.
 
 ## Tech stack
 
@@ -121,4 +121,4 @@ Harbory is a solo-built, actively evolving project. Issues and PRs are welcome �
 
 ## License
 
-No license has been chosen yet — all rights reserved by default until one is added.
+[MIT](LICENSE)
