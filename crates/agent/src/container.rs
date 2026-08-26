@@ -7,7 +7,7 @@ use bollard::container::{
 use bollard::image::CreateImageOptions;
 use bollard::models::{HostConfig, PortBinding};
 use bollard::Docker;
-use harbory_protocol::v1::{ContainerSpec, ContainerState, ContainerStatus};
+use harbory_protocol::v1::{ContainerSpec, ContainerState, ContainerStatus, DockerContainerInfo};
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 
@@ -29,6 +29,11 @@ const NAME_LABEL: &str = "harbory.name";
 /// would otherwise never match the control plane's synthetic identity
 /// string, permanently failing to converge.
 const IMAGE_LABEL: &str = "harbory.image";
+/// Set by `docker compose` itself on everything it creates — used only to
+/// label non-Harbory-managed rows in `list_all` with which compose stack
+/// they belong to, and to fetch that stack's logs (`compose.logs` takes
+/// exactly this project name).
+const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DeployError {
@@ -224,6 +229,43 @@ impl ContainerManager {
 
         Ok(states)
     }
+
+    /// Every container Docker knows about on this host, managed by Harbory
+    /// or not — the dashboard's docker-ps-style Containers view, which
+    /// (unlike `list_state`) also needs to show containers a Compose stack
+    /// created, since those never get their own `desired_containers` row.
+    pub async fn list_all(&self) -> Result<Vec<DockerContainerInfo>, bollard::errors::Error> {
+        let containers = self
+            .docker
+            .list_containers(Some(ListContainersOptions::<String> { all: true, ..Default::default() }))
+            .await?;
+
+        Ok(containers
+            .into_iter()
+            .map(|c| {
+                let labels = c.labels.unwrap_or_default();
+                let managed = labels.get(MANAGED_LABEL).map(|v| v == "true").unwrap_or(false);
+                let logical_name = if managed { labels.get(NAME_LABEL).cloned().unwrap_or_default() } else { String::new() };
+                let compose_project = labels.get(COMPOSE_PROJECT_LABEL).cloned().unwrap_or_default();
+                let name = c
+                    .names
+                    .and_then(|names| names.into_iter().next())
+                    .map(|n| n.trim_start_matches('/').to_string())
+                    .unwrap_or_default();
+
+                DockerContainerInfo {
+                    id: c.id.unwrap_or_default(),
+                    name,
+                    image: c.image.unwrap_or_default(),
+                    status: c.state.unwrap_or_default(),
+                    compose_project,
+                    managed,
+                    logical_name,
+                }
+            })
+            .collect())
+    }
+
     /// Fetches the last `tail` lines of stdout+stderr from the named container.
     /// `tail == 0` uses a sensible default (100 lines).
     /// Returns `Err` only on Docker API failures; a missing container is

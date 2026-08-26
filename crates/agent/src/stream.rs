@@ -314,6 +314,24 @@ pub async fn run_stream(
                                     }
                                 });
                             }
+                            Some(ControlPlanePayload::DockerContainersRequest(req)) => {
+                                let containers = containers.clone();
+                                let task_tx = tx.clone();
+                                tokio::spawn(async move {
+                                    let (list, error) = match containers.list_all().await {
+                                        Ok(list) => (list, String::new()),
+                                        Err(err) => (Vec::new(), err.to_string()),
+                                    };
+                                    let resp = AgentMessage {
+                                        payload: Some(harbory_protocol::v1::agent_message::Payload::DockerContainersResponse(
+                                            harbory_protocol::v1::DockerContainersResponse { request_id: req.request_id, containers: list, error },
+                                        )),
+                                    };
+                                    if task_tx.send(resp).await.is_err() {
+                                        tracing::warn!("outbound channel closed while sending docker containers response");
+                                    }
+                                });
+                            }
                             Some(ControlPlanePayload::SystemInfoRequest(req)) => {
                                 let system_info = system_info.clone();
                                 let task_tx = tx.clone();

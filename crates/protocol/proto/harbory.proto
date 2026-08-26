@@ -55,6 +55,7 @@ message AgentMessage {
     ImagesResponse images_response = 8;
     NetworksResponse networks_response = 9;
     SystemInfoResponse system_info_response = 10;
+    DockerContainersResponse docker_containers_response = 11;
   }
 }
 
@@ -70,6 +71,7 @@ message ControlPlaneMessage {
     ImagesRequest images_request = 8;
     NetworksRequest networks_request = 9;
     SystemInfoRequest system_info_request = 10;
+    DockerContainersRequest docker_containers_request = 11;
   }
 }
 
@@ -376,4 +378,42 @@ message SystemInfoResponse {
   // Populated only on total failure (e.g. can't reach Docker at all).
   // Individual missing fields above just stay zero/empty.
   string error = 14;
+}
+
+// --- Docker containers: full host listing (docker ps -a) -------------------
+//
+// Same fire-and-forget request/response pattern as ImagesRequest/Response.
+// Unlike ContainerStateReport (Harbory-managed containers only, pushed every
+// heartbeat), this is every container Docker knows about on the host,
+// on-demand — the dashboard's "Containers" tab wants a docker-ps-style view
+// that also shows containers a Compose stack created, which never appear as
+// their own `desired_containers` rows.
+
+message DockerContainersRequest {
+  string request_id = 1;
+}
+
+message DockerContainerInfo {
+  string id = 1;
+  // Docker's own container name, not Harbory's logical name.
+  string name = 2;
+  string image = 3;
+  // Docker's raw state string (running/exited/created/...).
+  string status = 4;
+  // Set when this container was created by `docker compose` — the compose
+  // project name, for grouping/labeling and for fetching stack logs.
+  string compose_project = 5;
+  // True when this is a Harbory single-container deploy (carries the
+  // harbory.managed label) — the dashboard only offers per-container
+  // remove for these.
+  bool managed = 6;
+  // Harbory's logical name for this container when managed == true; empty
+  // otherwise.
+  string logical_name = 7;
+}
+
+message DockerContainersResponse {
+  string request_id = 1;
+  repeated DockerContainerInfo containers = 2;
+  string error = 3;
 }

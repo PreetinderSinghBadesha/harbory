@@ -91,6 +91,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/:agent_id/networks", get(list_networks))
         .route("/agents/:agent_id/networks/:network_id", delete(delete_network))
         .route("/agents/:agent_id/system-info", get(get_system_info))
+        .route("/agents/:agent_id/docker-containers", get(list_docker_containers))
         .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
         .route("/agents/:agent_id/proxy-routes/:name", put(put_proxy_route).delete(delete_proxy_route))
         .route("/agents/:agent_id/compose-stacks", get(list_compose_stacks))
@@ -1119,6 +1120,63 @@ async fn get_system_info(
             primary_ip: resp.primary_ip,
             uptime_seconds: resp.uptime_seconds,
             error: resp.error,
+        })),
+        Ok(Err(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
+    }
+}
+
+#[derive(Serialize)]
+struct DockerContainerInfoDto {
+    id: String,
+    name: String,
+    image: String,
+    status: String,
+    compose_project: String,
+    managed: bool,
+    logical_name: String,
+}
+
+#[derive(Serialize)]
+struct DockerContainersDto {
+    containers: Vec<DockerContainerInfoDto>,
+    error: String,
+}
+
+/// Every container Docker knows about on the host (docker ps -a), not just
+/// Harbory-managed ones — used by the Containers tab to also show what a
+/// deployed Compose stack is actually running, which never appears in
+/// `desired_containers`.
+async fn list_docker_containers(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<DockerContainersDto>, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let request_id = Uuid::new_v4().to_string();
+    let rx = state
+        .registry
+        .request_docker_containers(agent_id, request_id)
+        .await
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(Json(DockerContainersDto {
+            error: resp.error,
+            containers: resp
+                .containers
+                .into_iter()
+                .map(|c| DockerContainerInfoDto {
+                    id: c.id,
+                    name: c.name,
+                    image: c.image,
+                    status: c.status,
+                    compose_project: c.compose_project,
+                    managed: c.managed,
+                    logical_name: c.logical_name,
+                })
+                .collect(),
         })),
         Ok(Err(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
         Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),

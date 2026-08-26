@@ -9,9 +9,9 @@ use harbory_protocol::{
     v1::{
         agent_message::Payload as AgentPayload, agent_stream_service_server::AgentStreamService,
         container_command::Action as ContainerAction, control_plane_message::Payload as ControlPlanePayload,
-        AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, GitSource as ProtoGitSource,
-        Heartbeat as HeartbeatMsg, HeartbeatAck, ImagesResponse, LogsResponse, NetworksResponse,
-        PortMapping as ProtoPortMapping, ProxyConfig, SystemInfoResponse, Welcome,
+        AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, DockerContainersResponse,
+        GitSource as ProtoGitSource, Heartbeat as HeartbeatMsg, HeartbeatAck, ImagesResponse, LogsResponse,
+        NetworksResponse, PortMapping as ProtoPortMapping, ProxyConfig, SystemInfoResponse, Welcome,
     },
 };
 use rand::RngCore;
@@ -54,6 +54,7 @@ struct ConnectedAgent {
     pending_images: HashMap<String, oneshot::Sender<ImagesResponse>>,
     pending_networks: HashMap<String, oneshot::Sender<NetworksResponse>>,
     pending_system_info: HashMap<String, oneshot::Sender<SystemInfoResponse>>,
+    pending_docker_containers: HashMap<String, oneshot::Sender<DockerContainersResponse>>,
 }
 
 impl ConnectionRegistry {
@@ -70,6 +71,7 @@ impl ConnectionRegistry {
                 pending_images: HashMap::new(),
                 pending_networks: HashMap::new(),
                 pending_system_info: HashMap::new(),
+                pending_docker_containers: HashMap::new(),
             },
         );
     }
@@ -187,6 +189,26 @@ impl ConnectionRegistry {
         Some(rx)
     }
 
+    /// Send a `DockerContainersRequest` — same pattern as `request_images`,
+    /// list-only (no removal variant; removal still goes through the
+    /// existing per-container `ContainerCommand` path).
+    pub async fn request_docker_containers(&self, agent_id: Uuid, request_id: String) -> Option<oneshot::Receiver<DockerContainersResponse>> {
+        let mut guard = self.inner.lock().await;
+        let conn = guard.get_mut(&agent_id)?;
+        let (tx, rx) = oneshot::channel();
+        conn.pending_docker_containers.insert(request_id.clone(), tx);
+        let msg = ControlPlaneMessage {
+            payload: Some(ControlPlanePayload::DockerContainersRequest(harbory_protocol::v1::DockerContainersRequest {
+                request_id: request_id.clone(),
+            })),
+        };
+        if conn.outbound.send(Ok(msg)).await.is_err() {
+            conn.pending_docker_containers.remove(&request_id);
+            return None;
+        }
+        Some(rx)
+    }
+
     /// Resolve a pending log request. Called by `drive_connection` when
     /// the agent sends a `LogsResponse`.
     async fn resolve_logs(&self, agent_id: Uuid, response: LogsResponse) {
@@ -226,6 +248,17 @@ impl ConnectionRegistry {
         let mut guard = self.inner.lock().await;
         if let Some(conn) = guard.get_mut(&agent_id) {
             if let Some(tx) = conn.pending_system_info.remove(&response.request_id) {
+                let _ = tx.send(response);
+            }
+        }
+    }
+
+    /// Resolve a pending docker-containers request. Called by
+    /// `drive_connection` when the agent sends a `DockerContainersResponse`.
+    async fn resolve_docker_containers(&self, agent_id: Uuid, response: DockerContainersResponse) {
+        let mut guard = self.inner.lock().await;
+        if let Some(conn) = guard.get_mut(&agent_id) {
+            if let Some(tx) = conn.pending_docker_containers.remove(&response.request_id) {
                 let _ = tx.send(response);
             }
         }
@@ -643,6 +676,9 @@ async fn drive_connection(
             }
             Some(Ok(AgentMessage { payload: Some(AgentPayload::SystemInfoResponse(resp)) })) => {
                 registry.resolve_system_info(agent_id, resp).await;
+            }
+            Some(Ok(AgentMessage { payload: Some(AgentPayload::DockerContainersResponse(resp)) })) => {
+                registry.resolve_docker_containers(agent_id, resp).await;
             }
             Some(Ok(_)) => {
                 tracing::debug!(%agent_id, "ignoring unexpected message after handshake");

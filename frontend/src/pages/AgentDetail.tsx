@@ -34,23 +34,6 @@ interface ContainersResponse {
   observed: ObservedContainer[];
 }
 
-interface DesiredComposeStack {
-  name: string;
-  status: string;
-  source: { repo_url: string; git_ref: string; dockerfile_path: string } | null;
-  compose_file_path: string;
-  env: string[];
-}
-interface ObservedComposeStack {
-  name: string;
-  status: string;
-  error?: string | null;
-}
-interface ComposeStacksResponse {
-  desired: DesiredComposeStack[];
-  observed: ObservedComposeStack[];
-}
-
 interface ProxyRoute {
   name: string;
   server_name: string;
@@ -94,6 +77,20 @@ interface NetworksDto {
   error: string;
 }
 
+interface DockerContainer {
+  id: string;
+  name: string;
+  image: string;
+  status: string;
+  compose_project: string;
+  managed: boolean;
+  logical_name: string;
+}
+interface DockerContainersDto {
+  containers: DockerContainer[];
+  error: string;
+}
+
 interface SystemInfoDto {
   hostname: string;
   os: string;
@@ -110,11 +107,10 @@ interface SystemInfoDto {
   error: string;
 }
 
-type ResourceTab = "deploy" | "container" | "compose" | "routes" | "images" | "networks" | "system";
+type ResourceTab = "deploy" | "system" | "container" | "routes" | "images" | "networks";
 
 type PendingAction =
   | { kind: "container"; name: string }
-  | { kind: "compose"; name: string }
   | { kind: "route"; name: string }
   | { kind: "image"; id: string; label: string }
   | { kind: "network"; id: string; label: string }
@@ -126,12 +122,6 @@ function confirmCopy(action: PendingAction): { title: string; message: string; c
       return {
         title: "REMOVE CONTAINER",
         message: `Remove container "${action.name}"? It will be stopped and deleted from the agent on its next heartbeat.`,
-        confirmLabel: "REMOVE",
-      };
-    case "compose":
-      return {
-        title: "REMOVE COMPOSE STACK",
-        message: `Remove compose stack "${action.name}"? All of its containers will be stopped and removed on the agent's next heartbeat.`,
         confirmLabel: "REMOVE",
       };
     case "route":
@@ -362,73 +352,6 @@ function LogsModal({ containerName, agentId, onClose }: { containerName: string;
   );
 }
 
-/** Harbory's own deployment status, in full — as opposed to the raw
- * container-output LOGS modal above. Used for compose stacks, where "show
- * me the logs" more often means "why isn't this converging" than "show me
- * stdout". */
-function StatusModal({
-  title,
-  rows,
-  error,
-  onClose,
-}: {
-  title: string;
-  rows: { label: string; value: ReactNode }[];
-  error?: string | null;
-  onClose: () => void;
-}) {
-  return (
-    <ModalBackdrop onClose={onClose} labelledBy="status-title">
-      <div className="pixel-panel" style={{ width: "100%", maxWidth: 620, maxHeight: "80vh", display: "flex", flexDirection: "column", background: "var(--panel)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "3px solid var(--ink)", flexShrink: 0 }}>
-          <div id="status-title" style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span className="pixel" style={{ fontSize: 11, color: "var(--clay-dark)" }}>DEPLOYMENT STATUS</span>
-            <span className="mono" style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>{title}</span>
-          </div>
-          <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={onClose} autoFocus style={{ fontSize: 10 }}>
-            ✕ CLOSE
-          </button>
-        </div>
-        <div style={{ padding: "18px 20px", overflow: "auto" }}>
-          <table>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.label}>
-                  <td className="mono" style={{ color: "var(--muted)", width: "38%" }}>{r.label}</td>
-                  <td className="mono" style={{ wordBreak: "break-word" }}>{r.value}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {error && (
-            <div style={{ marginTop: 16 }}>
-              <div className="field-label" style={{ marginBottom: 8 }}>LAST ERROR</div>
-              <pre
-                className="mono"
-                style={{
-                  margin: 0,
-                  fontSize: 11.5,
-                  lineHeight: 1.6,
-                  color: "var(--danger-dark)",
-                  background: "#FFF1F1",
-                  border: "2px solid var(--danger-dark)",
-                  padding: "10px 12px",
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-word",
-                  maxHeight: 260,
-                  overflow: "auto",
-                }}
-              >
-                {error}
-              </pre>
-            </div>
-          )}
-        </div>
-      </div>
-    </ModalBackdrop>
-  );
-}
-
 function HpBar({ online }: { online: boolean }) {
   return (
     <div className="hp-bar" style={{ justifyContent: "flex-start", marginBottom: 6 }}>
@@ -624,11 +547,6 @@ export function AgentDetail() {
   const queryClient = useQueryClient();
 
   const [logsModal, setLogsModal] = useState<{ containerName: string } | null>(null);
-  const [statusModal, setStatusModal] = useState<{
-    title: string;
-    rows: { label: string; value: ReactNode }[];
-    error?: string | null;
-  } | null>(null);
   const [confirmAction, setConfirmAction] = useState<PendingAction | null>(null);
   const [notice, setNotice] = useState<{ text: string; tone: "info" | "error" } | null>(null);
 
@@ -675,18 +593,29 @@ export function AgentDetail() {
     return observed !== undefined && observed.status !== "removed";
   });
 
+  // docker-ps-style listing, live off the agent — the desired/observed
+  // query above only covers Harbory single-container deploys, so a
+  // Compose-deployed stack's actual containers never show up there. This
+  // fills that gap; rows already represented above (managed === true) are
+  // filtered out of what gets rendered from this one to avoid duplicates.
+  const dockerContainers = useQuery({
+    queryKey: ["docker-containers", agentId],
+    queryFn: () => apiFetch<DockerContainersDto>(`/agents/${agentId}/docker-containers`),
+    refetchInterval: 5000,
+  });
+  const unmanagedContainers = (dockerContainers.data?.containers ?? []).filter((c) => !c.managed);
+
   const proxyRoutes = useQuery({
     queryKey: ["proxy-routes", agentId],
     queryFn: () => apiFetch<ProxyRoutesResponse>(`/agents/${agentId}/proxy-routes`),
     refetchInterval: 5000,
   });
 
-  const [activeTab, setActiveTab] = useState<ResourceTab>("deploy");
-  const [deploySource, setDeploySource] = useState<"container" | "compose">("container");
+  const [activeTab, setActiveTab] = useState<ResourceTab>("system");
+  const [deployMode, setDeployMode] = useState<"image" | "container" | "compose">("image");
   const [showRouteForm, setShowRouteForm] = useState(false);
 
   const [containerName, setContainerName] = useState("");
-  const [containerOrigin, setContainerOrigin] = useState<"image" | "github">("image");
   const [image, setImage] = useState("");
   const [selectedRepo, setSelectedRepo] = useState("");
   const [gitRef, setGitRef] = useState("");
@@ -708,7 +637,7 @@ export function AgentDetail() {
       apiFetch<void>(`/agents/${agentId}/containers/${encodeURIComponent(containerName.trim())}`, {
         method: "PUT",
         body: JSON.stringify(
-          containerOrigin === "github"
+          deployMode === "container"
             ? { source: { repo_url: repoUrlFor(selectedRepo), git_ref: gitRef, dockerfile_path: dockerfilePath }, env: toEnvList(containerEnvVars) }
             : { image, env: toEnvList(containerEnvVars) },
         ),
@@ -739,17 +668,6 @@ export function AgentDetail() {
     },
   });
 
-  const composeStacks = useQuery({
-    queryKey: ["compose-stacks", agentId],
-    queryFn: () => apiFetch<ComposeStacksResponse>(`/agents/${agentId}/compose-stacks`),
-    refetchInterval: 5000,
-  });
-  const activeCompose = (composeStacks.data?.desired ?? []).filter((d) => {
-    if (d.status !== "absent") return true;
-    const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
-    return observed !== undefined && observed.status !== "removed";
-  });
-
   const [composeName, setComposeName] = useState("");
   const [composeSelectedRepo, setComposeSelectedRepo] = useState("");
   const [composeGitRef, setComposeGitRef] = useState("");
@@ -768,28 +686,12 @@ export function AgentDetail() {
         }),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["compose-stacks", agentId] });
       setComposeName("");
       setComposeSelectedRepo("");
       setComposeGitRef("");
       setComposeFilePath("");
       setComposeEnvVars([]);
       setNotice({ text: "Compose stack queued for deployment.", tone: "info" });
-      setActiveTab("compose");
-    },
-  });
-
-  const removeComposeStack = useMutation({
-    mutationFn: (name: string) =>
-      apiFetch<void>(`/agents/${agentId}/compose-stacks/${encodeURIComponent(name)}`, { method: "DELETE" }),
-    onSuccess: (_data, name) => {
-      queryClient.invalidateQueries({ queryKey: ["compose-stacks", agentId] });
-      setNotice({ text: `Stack "${name}" queued for removal.`, tone: "info" });
-      setConfirmAction(null);
-    },
-    onError: (error, name) => {
-      setNotice({ text: `Couldn't remove stack "${name}": ${(error as Error).message}`, tone: "error" });
-      setConfirmAction(null);
     },
   });
 
@@ -905,9 +807,6 @@ export function AgentDetail() {
       case "container":
         removeContainer.mutate(confirmAction.name);
         break;
-      case "compose":
-        removeComposeStack.mutate(confirmAction.name);
-        break;
       case "route":
         removeRoute.mutate(confirmAction.name);
         break;
@@ -923,25 +822,11 @@ export function AgentDetail() {
     }
   }
 
-  function openComposeStatus(d: DesiredComposeStack, observed: ObservedComposeStack | undefined) {
-    setStatusModal({
-      title: d.name,
-      rows: [
-        { label: "SOURCE", value: d.source ? <RepoTag repoUrl={d.source.repo_url} gitRef={d.source.git_ref} /> : "—" },
-        { label: "COMPOSE FILE", value: d.compose_file_path || "docker-compose.yml" },
-        { label: "DESIRED", value: <StatusBadge status={d.status === "absent" ? "REMOVING" : d.status} /> },
-        { label: "OBSERVED", value: observed ? <StatusBadge status={observed.status} /> : "—" },
-      ],
-      error: observed?.error ?? null,
-    });
-  }
-
   const sprite = agentId ? spriteFor(agentId) : null;
 
-  const deploymentCount = activeContainers.length + activeCompose.length;
   const statChips: string[] = [];
-  if (containers.data && composeStacks.data) {
-    statChips.push(`${deploymentCount} DEPLOYMENT${deploymentCount === 1 ? "" : "S"}`);
+  if (containers.data) {
+    statChips.push(`${activeContainers.length} CONTAINER${activeContainers.length === 1 ? "" : "S"}`);
   }
   if (proxyRoutes.data) {
     const n = proxyRoutes.data.desired.length;
@@ -950,20 +835,17 @@ export function AgentDetail() {
 
   const confirmBusy =
     removeContainer.isPending ||
-    removeComposeStack.isPending ||
     removeRoute.isPending ||
     deleteImage.isPending ||
     deleteNetwork.isPending ||
     revoke.isPending;
 
   const tabs: { key: ResourceTab; label: string; count?: number }[] = [
-    { key: "deploy", label: "DEPLOY" },
+    { key: "system", label: "SYSTEM" },
     { key: "container", label: "CONTAINERS", count: containers.data ? activeContainers.length : undefined },
-    { key: "compose", label: "COMPOSE", count: composeStacks.data ? activeCompose.length : undefined },
     { key: "images", label: "IMAGES", count: images.data ? images.data.images.length : undefined },
     { key: "networks", label: "NETWORKS", count: networks.data ? networks.data.networks.length : undefined },
     { key: "routes", label: "ROUTES", count: proxyRoutes.data ? proxyRoutes.data.desired.length : undefined },
-    { key: "system", label: "SYSTEM" },
   ];
 
   return (
@@ -1055,10 +937,21 @@ export function AgentDetail() {
                     ))}
                   </div>
                 )}
+                {agent && !isRevoked && (
+                  <button
+                    type="button"
+                    className="pixel-btn"
+                    style={{ width: 180, justifyContent: "center" }}
+                    onClick={() => setActiveTab("deploy")}
+                  >
+                    + DEPLOY
+                  </button>
+                )}
                 {agent && (
                   <button
                     type="button"
                     className="pixel-btn pixel-btn-danger"
+                    style={{ width: 180, justifyContent: "center" }}
                     onClick={() => setConfirmAction({ kind: "revoke" })}
                   >
                     REVOKE AGENT
@@ -1102,50 +995,41 @@ export function AgentDetail() {
             ) : (
               <>
                 <p className="mono" style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 16px" }}>
-                  Deploy the Harbory way: a single container from an image or a GitHub repo, or a full multi-service stack via Docker Compose.
+                  Deploy the Harbory way: a plain image, a container built from a GitHub repo, or a full multi-service stack via Docker Compose.
                 </p>
-                <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
                   <button
                     type="button"
-                    className={deploySource === "container" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                    onClick={() => setDeploySource("container")}
+                    className={deployMode === "image" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                    onClick={() => setDeployMode("image")}
+                  >
+                    IMAGE
+                  </button>
+                  <button
+                    type="button"
+                    className={deployMode === "container" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                    onClick={() => setDeployMode("container")}
                   >
                     DOCKER CONTAINER
                   </button>
                   <button
                     type="button"
-                    className={deploySource === "compose" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                    onClick={() => setDeploySource("compose")}
+                    className={deployMode === "compose" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                    onClick={() => setDeployMode("compose")}
                   >
                     DOCKER COMPOSE
                   </button>
                 </div>
 
-                {deploySource === "container" ? (
+                {deployMode === "image" || deployMode === "container" ? (
                   <div className="form-box">
                     <form onSubmit={handleDeployContainer}>
-                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
                         <Field label="NAME">
                           <input placeholder="my-app" value={containerName} onChange={(e) => setContainerName(e.target.value)} required autoFocus />
                         </Field>
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <button
-                            type="button"
-                            className={containerOrigin === "image" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                            onClick={() => setContainerOrigin("image")}
-                          >
-                            IMAGE
-                          </button>
-                          <button
-                            type="button"
-                            className={containerOrigin === "github" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                            onClick={() => setContainerOrigin("github")}
-                          >
-                            BUILD FROM GITHUB
-                          </button>
-                        </div>
                       </div>
-                      {containerOrigin === "image" ? (
+                      {deployMode === "image" ? (
                         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
                           <Field label="IMAGE">
                             <input placeholder="nginx:alpine" value={image} onChange={(e) => setImage(e.target.value)} required />
@@ -1184,7 +1068,7 @@ export function AgentDetail() {
                       <button
                         type="submit"
                         className="pixel-btn pixel-btn-sm"
-                        disabled={deployContainer.isPending || (containerOrigin === "github" && !hasRepos)}
+                        disabled={deployContainer.isPending || (deployMode === "container" && !hasRepos)}
                       >
                         {deployContainer.isPending && <LoadingSpinner dotColor="var(--panel)" />}
                         {deployContainer.isPending ? "DEPLOYING…" : "DEPLOY CONTAINER"}
@@ -1241,15 +1125,29 @@ export function AgentDetail() {
         )}
 
         {activeTab === "container" && (
-          <SectionPanel title="CONTAINERS" count={containers.data ? activeContainers.length : undefined}>
+          <SectionPanel
+            title="CONTAINERS"
+            count={containers.data && dockerContainers.data ? activeContainers.length + unmanagedContainers.length : undefined}
+            action={
+              <button
+                type="button"
+                className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                onClick={() => dockerContainers.refetch()}
+                disabled={dockerContainers.isFetching}
+              >
+                {dockerContainers.isFetching ? "…" : "↺ REFRESH"}
+              </button>
+            }
+          >
             {containers.isLoading && <LoadingSpinner label="Loading containers…" />}
             {containers.isError && (
               <div className="alert-row">Couldn't load containers — retrying… ({(containers.error as Error).message})</div>
             )}
-            {containers.data && activeContainers.length === 0 && (
+            {dockerContainers.data?.error && <div className="alert-row">{dockerContainers.data.error}</div>}
+            {containers.data && dockerContainers.data && activeContainers.length === 0 && unmanagedContainers.length === 0 && (
               <EmptyHint>No containers yet — use the DEPLOY tab to run one.</EmptyHint>
             )}
-            {activeContainers.length > 0 && (
+            {(activeContainers.length > 0 || unmanagedContainers.length > 0) && (
               <table>
                 <thead>
                   <tr>
@@ -1265,7 +1163,7 @@ export function AgentDetail() {
                     const observed = containers.data?.observed.find((o) => o.name === d.name);
                     const isAbsent = d.status === "absent";
                     return (
-                      <tr key={d.name}>
+                      <tr key={`managed-${d.name}`}>
                         <td style={{ fontWeight: 700 }}>{d.name}</td>
                         <td>
                           {d.source ? (
@@ -1318,92 +1216,38 @@ export function AgentDetail() {
                       </tr>
                     );
                   })}
-                </tbody>
-              </table>
-            )}
-          </SectionPanel>
-        )}
-
-        {activeTab === "compose" && (
-          <SectionPanel title="COMPOSE" count={composeStacks.data ? activeCompose.length : undefined}>
-            {composeStacks.isLoading && <LoadingSpinner label="Loading stacks…" />}
-            {composeStacks.isError && (
-              <div className="alert-row">Couldn't load stacks — retrying… ({(composeStacks.error as Error).message})</div>
-            )}
-            {composeStacks.data && activeCompose.length === 0 && (
-              <EmptyHint>No compose stacks yet — use the DEPLOY tab to run one.</EmptyHint>
-            )}
-            {activeCompose.length > 0 && (
-              <table>
-                <thead>
-                  <tr>
-                    <th>NAME</th>
-                    <th>SOURCE</th>
-                    <th>DESIRED</th>
-                    <th>OBSERVED</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {activeCompose.map((d) => {
-                    const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
-                    const isAbsent = d.status === "absent";
-                    return (
-                      <tr key={d.name}>
-                        <td style={{ fontWeight: 700 }}>{d.name}</td>
-                        <td>
-                          {d.source ? (
-                            <>
-                              <RepoTag repoUrl={d.source.repo_url} gitRef={d.source.git_ref} />
-                              {d.compose_file_path && (
-                                <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
-                                  file: {d.compose_file_path}
-                                </div>
-                              )}
-                            </>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td>
-                          <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
-                        </td>
-                        <td>
-                          {observed ? (
-                            <div>
-                              <StatusBadge status={observed.status} />
-                              {observed.error && (
-                                <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
-                                  ⚠ {observed.error}
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td>
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  {unmanagedContainers.map((c) => (
+                    <tr key={`raw-${c.id}`}>
+                      <td style={{ fontWeight: 700 }}>{c.name}</td>
+                      <td>
+                        {c.image}
+                        {c.compose_project && (
+                          <div style={{ marginTop: 3 }}>
+                            <span className="badge" style={{ background: "#E9F4FF", color: "var(--blue)", borderColor: "var(--blue)" }}>
+                              COMPOSE: {c.compose_project}
+                            </span>
+                          </div>
+                        )}
+                      </td>
+                      <td>—</td>
+                      <td>
+                        <StatusBadge status={c.status} />
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                          {c.compose_project && (
                             <button
                               type="button"
                               className="pixel-btn pixel-btn-ghost pixel-btn-sm"
-                              onClick={() => openComposeStatus(d, observed)}
+                              onClick={() => setLogsModal({ containerName: c.compose_project })}
                             >
-                              STATUS
+                              LOGS
                             </button>
-                            <button
-                              type="button"
-                              className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                              onClick={() => setConfirmAction({ kind: "compose", name: d.name })}
-                              disabled={isAbsent}
-                            >
-                              {isAbsent ? "REMOVING…" : "REMOVE"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             )}
@@ -1711,15 +1555,6 @@ export function AgentDetail() {
           agentId={agentId}
           containerName={logsModal.containerName}
           onClose={() => setLogsModal(null)}
-        />
-      )}
-
-      {statusModal && (
-        <StatusModal
-          title={statusModal.title}
-          rows={statusModal.rows}
-          error={statusModal.error}
-          onClose={() => setStatusModal(null)}
         />
       )}
 
