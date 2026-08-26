@@ -3,8 +3,10 @@ mod compose;
 mod container;
 mod git_build;
 mod images;
+mod networks;
 mod proxy;
 mod stream;
+mod system_info;
 mod transport;
 
 use std::path::PathBuf;
@@ -73,6 +75,11 @@ async fn main() -> anyhow::Result<()> {
     // itself (already verified above).
     let images = Arc::new(images::ImagesManager::connect()?);
 
+    // Same on-demand pattern as images — network listing/removal and the
+    // system-info snapshot.
+    let networks = Arc::new(networks::NetworksManager::connect()?);
+    let system_info = Arc::new(system_info::SystemInfoManager::connect()?);
+
     // Transient disconnects (network blips, control-plane restarts) don't
     // require re-pairing — this loop just keeps reusing the stored
     // credential and identity, per the security model.
@@ -86,6 +93,8 @@ async fn main() -> anyhow::Result<()> {
             compose.clone(),
             proxy.clone(),
             images.clone(),
+            networks.clone(),
+            system_info.clone(),
         )
         .await
         {

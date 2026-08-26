@@ -53,6 +53,8 @@ message AgentMessage {
     LogsResponse logs_response = 6;
     ComposeStateReport compose_state_report = 7;
     ImagesResponse images_response = 8;
+    NetworksResponse networks_response = 9;
+    SystemInfoResponse system_info_response = 10;
   }
 }
 
@@ -66,6 +68,8 @@ message ControlPlaneMessage {
     LogsRequest logs_request = 6;
     ComposeCommand compose_command = 7;
     ImagesRequest images_request = 8;
+    NetworksRequest networks_request = 9;
+    SystemInfoRequest system_info_request = 10;
   }
 }
 
@@ -316,4 +320,60 @@ message ImagesResponse {
   // Populated when the list or a requested removal failed; images may
   // still carry a partial/previous listing when a removal failed.
   string error = 3;
+}
+
+// --- Networks: list & remove -----------------------------------------------
+//
+// Same fire-and-forget request/response pattern as ImagesRequest/Response.
+
+message NetworksRequest {
+  string request_id = 1;
+  // Docker network ID to remove before re-listing. Empty = plain list.
+  string remove_network_id = 2;
+}
+
+message NetworkInfo {
+  string id = 1;
+  string name = 2;
+  string driver = 3;
+  string scope = 4;
+  // False for Docker's own built-in networks (bridge/host/none) — the UI
+  // disables removal for these rather than relying on the delete call to
+  // fail, since Docker refuses to remove them anyway.
+  bool removable = 5;
+}
+
+message NetworksResponse {
+  string request_id = 1;
+  repeated NetworkInfo networks = 2;
+  string error = 3;
+}
+
+// --- System info: host resource snapshot -----------------------------------
+//
+// Same fire-and-forget request/response pattern as ImagesRequest/Response.
+// Best-effort: any field the host doesn't expose is left at its zero value
+// rather than failing the whole request.
+
+message SystemInfoRequest {
+  string request_id = 1;
+}
+
+message SystemInfoResponse {
+  string request_id = 1;
+  string hostname = 2;
+  string os = 3;
+  string kernel_version = 4;
+  string docker_version = 5;
+  uint32 cpu_count = 6;
+  string cpu_model = 7;
+  uint64 mem_total_bytes = 8;
+  uint64 disk_total_bytes = 9;
+  uint64 disk_used_bytes = 10;
+  uint64 disk_free_bytes = 11;
+  string primary_ip = 12;
+  uint64 uptime_seconds = 13;
+  // Populated only on total failure (e.g. can't reach Docker at all).
+  // Individual missing fields above just stay zero/empty.
+  string error = 14;
 }

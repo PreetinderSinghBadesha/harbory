@@ -82,13 +82,42 @@ interface ImagesDto {
   error: string;
 }
 
-type ResourceTab = "container" | "compose" | "routes" | "images";
+interface AgentNetwork {
+  id: string;
+  name: string;
+  driver: string;
+  scope: string;
+  removable: boolean;
+}
+interface NetworksDto {
+  networks: AgentNetwork[];
+  error: string;
+}
+
+interface SystemInfoDto {
+  hostname: string;
+  os: string;
+  kernel_version: string;
+  docker_version: string;
+  cpu_count: number;
+  cpu_model: string;
+  mem_total_bytes: number;
+  disk_total_bytes: number;
+  disk_used_bytes: number;
+  disk_free_bytes: number;
+  primary_ip: string;
+  uptime_seconds: number;
+  error: string;
+}
+
+type ResourceTab = "deploy" | "container" | "compose" | "routes" | "images" | "networks" | "system";
 
 type PendingAction =
   | { kind: "container"; name: string }
   | { kind: "compose"; name: string }
   | { kind: "route"; name: string }
   | { kind: "image"; id: string; label: string }
+  | { kind: "network"; id: string; label: string }
   | { kind: "revoke" };
 
 function confirmCopy(action: PendingAction): { title: string; message: string; confirmLabel: string } {
@@ -115,6 +144,12 @@ function confirmCopy(action: PendingAction): { title: string; message: string; c
       return {
         title: "DELETE IMAGE",
         message: `Delete image ${action.label}? It will be removed from this host's Docker storage and re-downloaded on the next deploy that needs it.`,
+        confirmLabel: "DELETE",
+      };
+    case "network":
+      return {
+        title: "DELETE NETWORK",
+        message: `Delete network "${action.label}"? Anything still attached to it will lose that connection.`,
         confirmLabel: "DELETE",
       };
     case "revoke":
@@ -327,6 +362,73 @@ function LogsModal({ containerName, agentId, onClose }: { containerName: string;
   );
 }
 
+/** Harbory's own deployment status, in full — as opposed to the raw
+ * container-output LOGS modal above. Used for compose stacks, where "show
+ * me the logs" more often means "why isn't this converging" than "show me
+ * stdout". */
+function StatusModal({
+  title,
+  rows,
+  error,
+  onClose,
+}: {
+  title: string;
+  rows: { label: string; value: ReactNode }[];
+  error?: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <ModalBackdrop onClose={onClose} labelledBy="status-title">
+      <div className="pixel-panel" style={{ width: "100%", maxWidth: 620, maxHeight: "80vh", display: "flex", flexDirection: "column", background: "var(--panel)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "3px solid var(--ink)", flexShrink: 0 }}>
+          <div id="status-title" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span className="pixel" style={{ fontSize: 11, color: "var(--clay-dark)" }}>DEPLOYMENT STATUS</span>
+            <span className="mono" style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>{title}</span>
+          </div>
+          <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={onClose} autoFocus style={{ fontSize: 10 }}>
+            ✕ CLOSE
+          </button>
+        </div>
+        <div style={{ padding: "18px 20px", overflow: "auto" }}>
+          <table>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.label}>
+                  <td className="mono" style={{ color: "var(--muted)", width: "38%" }}>{r.label}</td>
+                  <td className="mono" style={{ wordBreak: "break-word" }}>{r.value}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {error && (
+            <div style={{ marginTop: 16 }}>
+              <div className="field-label" style={{ marginBottom: 8 }}>LAST ERROR</div>
+              <pre
+                className="mono"
+                style={{
+                  margin: 0,
+                  fontSize: 11.5,
+                  lineHeight: 1.6,
+                  color: "var(--danger-dark)",
+                  background: "#FFF1F1",
+                  border: "2px solid var(--danger-dark)",
+                  padding: "10px 12px",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  maxHeight: 260,
+                  overflow: "auto",
+                }}
+              >
+                {error}
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
+    </ModalBackdrop>
+  );
+}
+
 function HpBar({ online }: { online: boolean }) {
   return (
     <div className="hp-bar" style={{ justifyContent: "flex-start", marginBottom: 6 }}>
@@ -400,21 +502,6 @@ function SectionPanel({
   );
 }
 
-function CollapsibleForm({ title, open, onCancel, children }: { title: string; open: boolean; onCancel: () => void; children: ReactNode }) {
-  if (!open) return null;
-  return (
-    <div className="form-box">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
-        <span className="eyebrow" style={{ marginBottom: 0 }}>{title}</span>
-        <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={onCancel}>
-          CANCEL
-        </button>
-      </div>
-      {children}
-    </div>
-  );
-}
-
 function EmptyHint({ children }: { children: ReactNode }) {
   return (
     <p className="mono" style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 0" }}>
@@ -427,6 +514,16 @@ function formatSize(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return "—";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 function imageLabel(img: AgentImage): string {
@@ -512,12 +609,26 @@ function EnvVarsEditor({
   );
 }
 
+function StatRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <tr>
+      <td className="mono" style={{ color: "var(--muted)", width: "34%" }}>{label}</td>
+      <td className="mono" style={{ fontWeight: 600, wordBreak: "break-word" }}>{value}</td>
+    </tr>
+  );
+}
+
 export function AgentDetail() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const [logsModal, setLogsModal] = useState<{ containerName: string } | null>(null);
+  const [statusModal, setStatusModal] = useState<{
+    title: string;
+    rows: { label: string; value: ReactNode }[];
+    error?: string | null;
+  } | null>(null);
   const [confirmAction, setConfirmAction] = useState<PendingAction | null>(null);
   const [notice, setNotice] = useState<{ text: string; tone: "info" | "error" } | null>(null);
 
@@ -570,13 +681,12 @@ export function AgentDetail() {
     refetchInterval: 5000,
   });
 
-  const [activeTab, setActiveTab] = useState<ResourceTab>("container");
-  const [showContainerForm, setShowContainerForm] = useState(false);
-  const [showComposeForm, setShowComposeForm] = useState(false);
+  const [activeTab, setActiveTab] = useState<ResourceTab>("deploy");
+  const [deploySource, setDeploySource] = useState<"container" | "compose">("container");
   const [showRouteForm, setShowRouteForm] = useState(false);
 
   const [containerName, setContainerName] = useState("");
-  const [deploySource, setDeploySource] = useState<"image" | "github">("image");
+  const [containerOrigin, setContainerOrigin] = useState<"image" | "github">("image");
   const [image, setImage] = useState("");
   const [selectedRepo, setSelectedRepo] = useState("");
   const [gitRef, setGitRef] = useState("");
@@ -598,14 +708,13 @@ export function AgentDetail() {
       apiFetch<void>(`/agents/${agentId}/containers/${encodeURIComponent(containerName.trim())}`, {
         method: "PUT",
         body: JSON.stringify(
-          deploySource === "github"
+          containerOrigin === "github"
             ? { source: { repo_url: repoUrlFor(selectedRepo), git_ref: gitRef, dockerfile_path: dockerfilePath }, env: toEnvList(containerEnvVars) }
             : { image, env: toEnvList(containerEnvVars) },
         ),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["containers", agentId] });
-      setShowContainerForm(false);
       setContainerName("");
       setImage("");
       setSelectedRepo("");
@@ -613,6 +722,7 @@ export function AgentDetail() {
       setDockerfilePath("");
       setContainerEnvVars([]);
       setNotice({ text: "Container queued for deployment.", tone: "info" });
+      setActiveTab("container");
     },
   });
   const removeContainer = useMutation({
@@ -659,13 +769,13 @@ export function AgentDetail() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["compose-stacks", agentId] });
-      setShowComposeForm(false);
       setComposeName("");
       setComposeSelectedRepo("");
       setComposeGitRef("");
       setComposeFilePath("");
       setComposeEnvVars([]);
       setNotice({ text: "Compose stack queued for deployment.", tone: "info" });
+      setActiveTab("compose");
     },
   });
 
@@ -688,7 +798,8 @@ export function AgentDetail() {
   const [listenPort, setListenPort] = useState(80);
   const [upstreamHost, setUpstreamHost] = useState("127.0.0.1");
   const [upstreamPort, setUpstreamPort] = useState(8080);
-  const deployRoute = useMutation({    mutationFn: () =>
+  const deployRoute = useMutation({
+    mutationFn: () =>
       apiFetch<void>(`/agents/${agentId}/proxy-routes/${encodeURIComponent(routeName.trim())}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -743,6 +854,38 @@ export function AgentDetail() {
     },
   });
 
+  const networks = useQuery({
+    queryKey: ["networks", agentId],
+    queryFn: () => apiFetch<NetworksDto>(`/agents/${agentId}/networks`),
+    staleTime: 0,
+    refetchInterval: 20000,
+  });
+  const deleteNetwork = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<NetworksDto>(`/agents/${agentId}/networks/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["networks", agentId], data);
+      if (data.error) {
+        setNotice({ text: data.error, tone: "error" });
+      } else {
+        setNotice({ text: "Network deleted.", tone: "info" });
+      }
+      setConfirmAction(null);
+    },
+    onError: (error) => {
+      setNotice({ text: `Couldn't delete network: ${(error as Error).message}`, tone: "error" });
+      setConfirmAction(null);
+    },
+  });
+
+  const systemInfo = useQuery({
+    queryKey: ["system-info", agentId],
+    queryFn: () => apiFetch<SystemInfoDto>(`/agents/${agentId}/system-info`),
+    enabled: activeTab === "system",
+    staleTime: 0,
+    retry: false,
+  });
+
   function handleDeployContainer(e: FormEvent) {
     e.preventDefault();
     deployContainer.mutate();
@@ -771,10 +914,26 @@ export function AgentDetail() {
       case "image":
         deleteImage.mutate(confirmAction.id);
         break;
+      case "network":
+        deleteNetwork.mutate(confirmAction.id);
+        break;
       case "revoke":
         revoke.mutate();
         break;
     }
+  }
+
+  function openComposeStatus(d: DesiredComposeStack, observed: ObservedComposeStack | undefined) {
+    setStatusModal({
+      title: d.name,
+      rows: [
+        { label: "SOURCE", value: d.source ? <RepoTag repoUrl={d.source.repo_url} gitRef={d.source.git_ref} /> : "—" },
+        { label: "COMPOSE FILE", value: d.compose_file_path || "docker-compose.yml" },
+        { label: "DESIRED", value: <StatusBadge status={d.status === "absent" ? "REMOVING" : d.status} /> },
+        { label: "OBSERVED", value: observed ? <StatusBadge status={observed.status} /> : "—" },
+      ],
+      error: observed?.error ?? null,
+    });
   }
 
   const sprite = agentId ? spriteFor(agentId) : null;
@@ -794,7 +953,18 @@ export function AgentDetail() {
     removeComposeStack.isPending ||
     removeRoute.isPending ||
     deleteImage.isPending ||
+    deleteNetwork.isPending ||
     revoke.isPending;
+
+  const tabs: { key: ResourceTab; label: string; count?: number }[] = [
+    { key: "deploy", label: "DEPLOY" },
+    { key: "container", label: "CONTAINERS", count: containers.data ? activeContainers.length : undefined },
+    { key: "compose", label: "COMPOSE", count: composeStacks.data ? activeCompose.length : undefined },
+    { key: "images", label: "IMAGES", count: images.data ? images.data.images.length : undefined },
+    { key: "networks", label: "NETWORKS", count: networks.data ? networks.data.networks.length : undefined },
+    { key: "routes", label: "ROUTES", count: proxyRoutes.data ? proxyRoutes.data.desired.length : undefined },
+    { key: "system", label: "SYSTEM" },
+  ];
 
   return (
     <div className="game-hud">
@@ -912,81 +1082,339 @@ export function AgentDetail() {
         )}
 
         <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
-          <button
-            type="button"
-            className={activeTab === "container" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-            onClick={() => setActiveTab("container")}
-          >
-            CONTAINERS
-            {containers.data && <span className="badge" style={{ marginLeft: 8 }}>{activeContainers.length}</span>}
-          </button>
-          <button
-            type="button"
-            className={activeTab === "compose" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-            onClick={() => setActiveTab("compose")}
-          >
-            COMPOSE
-            {composeStacks.data && <span className="badge" style={{ marginLeft: 8 }}>{activeCompose.length}</span>}
-          </button>
-          <button
-            type="button"
-            className={activeTab === "routes" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-            onClick={() => setActiveTab("routes")}
-          >
-            ROUTES
-            {proxyRoutes.data && <span className="badge" style={{ marginLeft: 8 }}>{proxyRoutes.data.desired.length}</span>}
-          </button>
-          <button
-            type="button"
-            className={activeTab === "images" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-            onClick={() => setActiveTab("images")}
-          >
-            IMAGES
-            {images.data && <span className="badge" style={{ marginLeft: 8 }}>{images.data.images.length}</span>}
-          </button>
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              className={activeTab === t.key ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+              onClick={() => setActiveTab(t.key)}
+            >
+              {t.label}
+              {typeof t.count === "number" && <span className="badge" style={{ marginLeft: 8 }}>{t.count}</span>}
+            </button>
+          ))}
         </div>
 
-        <SectionPanel
-          title={
-            activeTab === "container"
-              ? "CONTAINERS"
-              : activeTab === "compose"
-                ? "COMPOSE"
-                : activeTab === "routes"
-                  ? "PROXY ROUTES"
-                  : "IMAGES"
-          }
-          count={
-            activeTab === "container"
-              ? (containers.data ? activeContainers.length : undefined)
-              : activeTab === "compose"
-                ? (composeStacks.data ? activeCompose.length : undefined)
-                : activeTab === "routes"
-                  ? (proxyRoutes.data ? proxyRoutes.data.desired.length : undefined)
-                  : (images.data ? images.data.images.length : undefined)
-          }
-          action={
-            activeTab === "container" ? (
-              !isRevoked && (
-                <button
-                  type="button"
-                  className={showContainerForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
-                  onClick={() => setShowContainerForm((v) => !v)}
-                >
-                  {showContainerForm ? "✕ CLOSE" : "+ NEW CONTAINER"}
-                </button>
-              )
-            ) : activeTab === "compose" ? (
-              !isRevoked && (
-                <button
-                  type="button"
-                  className={showComposeForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
-                  onClick={() => setShowComposeForm((v) => !v)}
-                >
-                  {showComposeForm ? "✕ CLOSE" : "+ NEW STACK"}
-                </button>
-              )
-            ) : activeTab === "routes" ? (
+        {activeTab === "deploy" && (
+          <SectionPanel title="DEPLOY">
+            {isRevoked ? (
+              <EmptyHint>This agent is revoked — deploying is disabled.</EmptyHint>
+            ) : (
+              <>
+                <p className="mono" style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 16px" }}>
+                  Deploy the Harbory way: a single container from an image or a GitHub repo, or a full multi-service stack via Docker Compose.
+                </p>
+                <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+                  <button
+                    type="button"
+                    className={deploySource === "container" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                    onClick={() => setDeploySource("container")}
+                  >
+                    DOCKER CONTAINER
+                  </button>
+                  <button
+                    type="button"
+                    className={deploySource === "compose" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                    onClick={() => setDeploySource("compose")}
+                  >
+                    DOCKER COMPOSE
+                  </button>
+                </div>
+
+                {deploySource === "container" ? (
+                  <div className="form-box">
+                    <form onSubmit={handleDeployContainer}>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+                        <Field label="NAME">
+                          <input placeholder="my-app" value={containerName} onChange={(e) => setContainerName(e.target.value)} required autoFocus />
+                        </Field>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button
+                            type="button"
+                            className={containerOrigin === "image" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                            onClick={() => setContainerOrigin("image")}
+                          >
+                            IMAGE
+                          </button>
+                          <button
+                            type="button"
+                            className={containerOrigin === "github" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+                            onClick={() => setContainerOrigin("github")}
+                          >
+                            BUILD FROM GITHUB
+                          </button>
+                        </div>
+                      </div>
+                      {containerOrigin === "image" ? (
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                          <Field label="IMAGE">
+                            <input placeholder="nginx:alpine" value={image} onChange={(e) => setImage(e.target.value)} required />
+                          </Field>
+                        </div>
+                      ) : hasRepos ? (
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                          <Field label="REPOSITORY">
+                            <select value={selectedRepo} onChange={(e) => setSelectedRepo(e.target.value)} required>
+                              <option value="" disabled>
+                                select a repo…
+                              </option>
+                              {github.data?.repos.map((r) => (
+                                <option key={r.full_name} value={r.full_name}>
+                                  {r.full_name}
+                                  {r.private ? " (private)" : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </Field>
+                          <Field label="BRANCH" optional>
+                            <input placeholder="repo's default branch" value={gitRef} onChange={(e) => setGitRef(e.target.value)} />
+                          </Field>
+                          <Field label="DOCKERFILE PATH" optional>
+                            <input placeholder="Dockerfile" value={dockerfilePath} onChange={(e) => setDockerfilePath(e.target.value)} />
+                          </Field>
+                        </div>
+                      ) : (
+                        <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: "0 0 14px" }}>
+                          {github.isLoading ? "Loading repos…" : "Connect a GitHub account from Settings first."}
+                        </p>
+                      )}
+                      <div style={{ marginBottom: 14 }}>
+                        <EnvVarsEditor vars={containerEnvVars} onChange={setContainerEnvVars} />
+                      </div>
+                      <button
+                        type="submit"
+                        className="pixel-btn pixel-btn-sm"
+                        disabled={deployContainer.isPending || (containerOrigin === "github" && !hasRepos)}
+                      >
+                        {deployContainer.isPending && <LoadingSpinner dotColor="var(--panel)" />}
+                        {deployContainer.isPending ? "DEPLOYING…" : "DEPLOY CONTAINER"}
+                      </button>
+                      {deployContainer.isError && <div className="alert-row">{(deployContainer.error as Error).message}</div>}
+                    </form>
+                  </div>
+                ) : (
+                  <div className="form-box">
+                    <form onSubmit={handleDeployComposeStack}>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                        <Field label="STACK NAME">
+                          <input placeholder="lowercase, digits, - and _" value={composeName} onChange={(e) => setComposeName(e.target.value)} required autoFocus />
+                        </Field>
+                        <Field label="REPOSITORY">
+                          <select value={composeSelectedRepo} onChange={(e) => setComposeSelectedRepo(e.target.value)} required disabled={!hasRepos}>
+                            <option value="" disabled>
+                              select a repo…
+                            </option>
+                            {github.data?.repos.map((r) => (
+                              <option key={r.full_name} value={r.full_name}>
+                                {r.full_name}
+                                {r.private ? " (private)" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                        <Field label="BRANCH" optional>
+                          <input placeholder="repo's default branch" value={composeGitRef} onChange={(e) => setComposeGitRef(e.target.value)} />
+                        </Field>
+                        <Field label="COMPOSE FILE" optional>
+                          <input placeholder="docker-compose.yml" value={composeFilePath} onChange={(e) => setComposeFilePath(e.target.value)} />
+                        </Field>
+                      </div>
+                      {!hasRepos && (
+                        <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: "0 0 14px" }}>
+                          {github.isLoading ? "Loading repos…" : "Connect a GitHub account from Settings first."}
+                        </p>
+                      )}
+                      <div style={{ marginBottom: 14 }}>
+                        <EnvVarsEditor vars={composeEnvVars} onChange={setComposeEnvVars} />
+                      </div>
+                      <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployComposeStack.isPending || !hasRepos}>
+                        {deployComposeStack.isPending && <LoadingSpinner dotColor="var(--panel)" />}
+                        {deployComposeStack.isPending ? "DEPLOYING…" : "DEPLOY STACK"}
+                      </button>
+                      {deployComposeStack.isError && <div className="alert-row">{(deployComposeStack.error as Error).message}</div>}
+                    </form>
+                  </div>
+                )}
+              </>
+            )}
+          </SectionPanel>
+        )}
+
+        {activeTab === "container" && (
+          <SectionPanel title="CONTAINERS" count={containers.data ? activeContainers.length : undefined}>
+            {containers.isLoading && <LoadingSpinner label="Loading containers…" />}
+            {containers.isError && (
+              <div className="alert-row">Couldn't load containers — retrying… ({(containers.error as Error).message})</div>
+            )}
+            {containers.data && activeContainers.length === 0 && (
+              <EmptyHint>No containers yet — use the DEPLOY tab to run one.</EmptyHint>
+            )}
+            {activeContainers.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>NAME</th>
+                    <th>IMAGE / SOURCE</th>
+                    <th>DESIRED</th>
+                    <th>OBSERVED</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {activeContainers.map((d) => {
+                    const observed = containers.data?.observed.find((o) => o.name === d.name);
+                    const isAbsent = d.status === "absent";
+                    return (
+                      <tr key={d.name}>
+                        <td style={{ fontWeight: 700 }}>{d.name}</td>
+                        <td>
+                          {d.source ? (
+                            <RepoTag repoUrl={d.source.repo_url} gitRef={d.source.git_ref} />
+                          ) : (
+                            d.image
+                          )}
+                          {(d.env?.length ?? 0) > 0 && (
+                            <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
+                              {d.env!.length} env var{d.env!.length === 1 ? "" : "s"}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
+                        </td>
+                        <td>
+                          {observed ? (
+                            <div>
+                              <StatusBadge status={observed.status} />
+                              {observed.error && (
+                                <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
+                                  ⚠ {observed.error}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                            <button
+                              type="button"
+                              className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                              onClick={() => setLogsModal({ containerName: d.name })}
+                            >
+                              LOGS
+                            </button>
+                            <button
+                              type="button"
+                              className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                              onClick={() => setConfirmAction({ kind: "container", name: d.name })}
+                              disabled={isAbsent}
+                            >
+                              {isAbsent ? "REMOVING…" : "REMOVE"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </SectionPanel>
+        )}
+
+        {activeTab === "compose" && (
+          <SectionPanel title="COMPOSE" count={composeStacks.data ? activeCompose.length : undefined}>
+            {composeStacks.isLoading && <LoadingSpinner label="Loading stacks…" />}
+            {composeStacks.isError && (
+              <div className="alert-row">Couldn't load stacks — retrying… ({(composeStacks.error as Error).message})</div>
+            )}
+            {composeStacks.data && activeCompose.length === 0 && (
+              <EmptyHint>No compose stacks yet — use the DEPLOY tab to run one.</EmptyHint>
+            )}
+            {activeCompose.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>NAME</th>
+                    <th>SOURCE</th>
+                    <th>DESIRED</th>
+                    <th>OBSERVED</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {activeCompose.map((d) => {
+                    const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
+                    const isAbsent = d.status === "absent";
+                    return (
+                      <tr key={d.name}>
+                        <td style={{ fontWeight: 700 }}>{d.name}</td>
+                        <td>
+                          {d.source ? (
+                            <>
+                              <RepoTag repoUrl={d.source.repo_url} gitRef={d.source.git_ref} />
+                              {d.compose_file_path && (
+                                <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
+                                  file: {d.compose_file_path}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td>
+                          <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
+                        </td>
+                        <td>
+                          {observed ? (
+                            <div>
+                              <StatusBadge status={observed.status} />
+                              {observed.error && (
+                                <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
+                                  ⚠ {observed.error}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                            <button
+                              type="button"
+                              className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                              onClick={() => openComposeStatus(d, observed)}
+                            >
+                              STATUS
+                            </button>
+                            <button
+                              type="button"
+                              className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                              onClick={() => setConfirmAction({ kind: "compose", name: d.name })}
+                              disabled={isAbsent}
+                            >
+                              {isAbsent ? "REMOVING…" : "REMOVE"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </SectionPanel>
+        )}
+
+        {activeTab === "routes" && (
+          <SectionPanel
+            title="PROXY ROUTES"
+            count={proxyRoutes.data ? proxyRoutes.data.desired.length : undefined}
+            action={
               !isRevoked && (
                 <button
                   type="button"
@@ -996,474 +1424,286 @@ export function AgentDetail() {
                   {showRouteForm ? "✕ CLOSE" : "+ NEW ROUTE"}
                 </button>
               )
-            ) : (
-              <button
-                type="button"
-                className="pixel-btn pixel-btn-ghost pixel-btn-sm"
-                onClick={() => images.refetch()}
-                disabled={images.isFetching}
-              >
-                {images.isFetching ? "…" : "↺ REFRESH"}
-              </button>
-            )
-          }
-        >
-          {activeTab === "container" && (
-            <>
-              {containers.isLoading && <LoadingSpinner label="Loading containers…" />}
-              {containers.isError && (
-                <div className="alert-row">Couldn't load containers — retrying… ({(containers.error as Error).message})</div>
-              )}
-              {containers.data && activeContainers.length === 0 && (
-                <EmptyHint>No containers yet{isRevoked ? "." : " — use “+ New Container” to deploy one."}</EmptyHint>
-              )}
-              {activeContainers.length > 0 && (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>NAME</th>
-                      <th>IMAGE / SOURCE</th>
-                      <th>DESIRED</th>
-                      <th>OBSERVED</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeContainers.map((d) => {
-                      const observed = containers.data?.observed.find((o) => o.name === d.name);
-                      const isAbsent = d.status === "absent";
-                      return (
-                        <tr key={d.name}>
-                          <td style={{ fontWeight: 700 }}>{d.name}</td>
-                          <td>
-                            {d.source ? (
-                              <RepoTag repoUrl={d.source.repo_url} gitRef={d.source.git_ref} />
-                            ) : (
-                              d.image
-                            )}
-                            {(d.env?.length ?? 0) > 0 && (
-                              <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
-                                {d.env!.length} env var{d.env!.length === 1 ? "" : "s"}
-                              </div>
-                            )}
-                          </td>
-                          <td>
-                            <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
-                          </td>
-                          <td>
-                            {observed ? (
-                              <div>
-                                <StatusBadge status={observed.status} />
-                                {observed.error && (
-                                  <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
-                                    ⚠ {observed.error}
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td>
-                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                              <button
-                                type="button"
-                                className="pixel-btn pixel-btn-ghost pixel-btn-sm"
-                                onClick={() => setLogsModal({ containerName: d.name })}
-                              >
-                                LOGS
-                              </button>
-                              <button
-                                type="button"
-                                className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                                onClick={() => setConfirmAction({ kind: "container", name: d.name })}
-                                disabled={isAbsent}
-                              >
-                                {isAbsent ? "REMOVING…" : "REMOVE"}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-
-              <CollapsibleForm
-                title="NEW CONTAINER"
-                open={showContainerForm && !isRevoked}
-                onCancel={() => setShowContainerForm(false)}
-              >
-                <form onSubmit={handleDeployContainer}>
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
-                    <Field label="NAME">
-                      <input placeholder="my-app" value={containerName} onChange={(e) => setContainerName(e.target.value)} required autoFocus />
-                    </Field>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button
-                        type="button"
-                        className={deploySource === "image" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                        onClick={() => setDeploySource("image")}
-                      >
-                        IMAGE
-                      </button>
-                      <button
-                        type="button"
-                        className={deploySource === "github" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                        onClick={() => setDeploySource("github")}
-                      >
-                        BUILD FROM GITHUB
-                      </button>
-                    </div>
-                  </div>
-                  {deploySource === "image" ? (
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                      <Field label="IMAGE">
-                        <input placeholder="nginx:alpine" value={image} onChange={(e) => setImage(e.target.value)} required />
-                      </Field>
-                    </div>
-                  ) : hasRepos ? (
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                      <Field label="REPOSITORY">
-                        <select value={selectedRepo} onChange={(e) => setSelectedRepo(e.target.value)} required>
-                          <option value="" disabled>
-                            select a repo…
-                          </option>
-                          {github.data?.repos.map((r) => (
-                            <option key={r.full_name} value={r.full_name}>
-                              {r.full_name}
-                              {r.private ? " (private)" : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </Field>
-                      <Field label="BRANCH" optional>
-                        <input placeholder="repo's default branch" value={gitRef} onChange={(e) => setGitRef(e.target.value)} />
-                      </Field>
-                      <Field label="DOCKERFILE PATH" optional>
-                        <input placeholder="Dockerfile" value={dockerfilePath} onChange={(e) => setDockerfilePath(e.target.value)} />
-                      </Field>
-                    </div>
-                  ) : (
-                    <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: "0 0 14px" }}>
-                      {github.isLoading ? "Loading repos…" : "Connect a GitHub account from the dashboard first."}
-                    </p>
-                  )}
-                  <div style={{ marginBottom: 14 }}>
-                    <EnvVarsEditor vars={containerEnvVars} onChange={setContainerEnvVars} />
-                  </div>
-                  <button
-                    type="submit"
-                    className="pixel-btn pixel-btn-sm"
-                    disabled={deployContainer.isPending || (deploySource === "github" && !hasRepos)}
-                  >
-                    {deployContainer.isPending && <LoadingSpinner dotColor="var(--panel)" />}
-                    {deployContainer.isPending ? "DEPLOYING…" : "DEPLOY"}
-                  </button>
-                  {deployContainer.isError && <div className="alert-row">{(deployContainer.error as Error).message}</div>}
-                </form>
-              </CollapsibleForm>
-            </>
-          )}
-          {activeTab === "compose" && (
-            <>
-              {composeStacks.isLoading && <LoadingSpinner label="Loading stacks…" />}
-              {composeStacks.isError && (
-                <div className="alert-row">Couldn't load stacks — retrying… ({(composeStacks.error as Error).message})</div>
-              )}
-              {composeStacks.data && activeCompose.length === 0 && (
-                <EmptyHint>No compose stacks yet{isRevoked ? "." : " — use “+ New Stack” to deploy a multi-container app."}</EmptyHint>
-              )}
-              {activeCompose.length > 0 && (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>NAME</th>
-                      <th>SOURCE</th>
-                      <th>DESIRED</th>
-                      <th>OBSERVED</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeCompose.map((d) => {
-                      const observed = composeStacks.data?.observed.find((o) => o.name === d.name);
-                      const isAbsent = d.status === "absent";
-                      return (
-                        <tr key={d.name}>
-                          <td style={{ fontWeight: 700 }}>{d.name}</td>
-                          <td>
-                            {d.source ? (
-                              <>
-                                <RepoTag repoUrl={d.source.repo_url} gitRef={d.source.git_ref} />
-                                {d.compose_file_path && (
-                                  <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
-                                    file: {d.compose_file_path}
-                                  </div>
-                                )}
-                              </>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td>
-                            <StatusBadge status={isAbsent ? "REMOVING" : d.status} />
-                          </td>
-                          <td>
-                            {observed ? (
-                              <div>
-                                <StatusBadge status={observed.status} />
-                                {observed.error && (
-                                  <div className="mono" style={{ fontSize: 10.5, color: "var(--clay)", marginTop: 4, maxWidth: 300, wordBreak: "break-word" }}>
-                                    ⚠ {observed.error}
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td>
-                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                              <button
-                                type="button"
-                                className="pixel-btn pixel-btn-ghost pixel-btn-sm"
-                                onClick={() => setLogsModal({ containerName: d.name })}
-                              >
-                                LOGS
-                              </button>
-                              <button
-                                type="button"
-                                className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                                onClick={() => setConfirmAction({ kind: "compose", name: d.name })}
-                                disabled={isAbsent}
-                              >
-                                {isAbsent ? "REMOVING…" : "REMOVE"}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-
-              <CollapsibleForm
-                title="NEW COMPOSE STACK"
-                open={showComposeForm && !isRevoked}
-                onCancel={() => setShowComposeForm(false)}
-              >
-                <form onSubmit={handleDeployComposeStack}>
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                    <Field label="STACK NAME">
-                      <input placeholder="lowercase, digits, - and _" value={composeName} onChange={(e) => setComposeName(e.target.value)} required autoFocus />
-                    </Field>
-                    <Field label="REPOSITORY">
-                      <select value={composeSelectedRepo} onChange={(e) => setComposeSelectedRepo(e.target.value)} required disabled={!hasRepos}>
-                        <option value="" disabled>
-                          select a repo…
-                        </option>
-                        {github.data?.repos.map((r) => (
-                          <option key={r.full_name} value={r.full_name}>
-                            {r.full_name}
-                            {r.private ? " (private)" : ""}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                    <Field label="BRANCH" optional>
-                      <input placeholder="repo's default branch" value={composeGitRef} onChange={(e) => setComposeGitRef(e.target.value)} />
-                    </Field>
-                    <Field label="COMPOSE FILE" optional>
-                      <input placeholder="docker-compose.yml" value={composeFilePath} onChange={(e) => setComposeFilePath(e.target.value)} />
-                    </Field>
-                  </div>
-                  {!hasRepos && (
-                    <p className="mono" style={{ fontSize: 11.5, color: "var(--muted)", margin: "0 0 14px" }}>
-                      {github.isLoading ? "Loading repos…" : "Connect a GitHub account from the dashboard first."}
-                    </p>
-                  )}
-                  <div style={{ marginBottom: 14 }}>
-                    <EnvVarsEditor vars={composeEnvVars} onChange={setComposeEnvVars} />
-                  </div>
-                  <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployComposeStack.isPending || !hasRepos}>
-                    {deployComposeStack.isPending && <LoadingSpinner dotColor="var(--panel)" />}
-                    {deployComposeStack.isPending ? "DEPLOYING…" : "DEPLOY STACK"}
-                  </button>
-                  {deployComposeStack.isError && <div className="alert-row">{(deployComposeStack.error as Error).message}</div>}
-                </form>
-              </CollapsibleForm>
-            </>
-          )}
-          {activeTab === "routes" && (
-            <>
-          {proxyRoutes.data?.error && (
-            <div className="alert-row">Last apply error: {proxyRoutes.data.error}</div>
-          )}
-          {proxyRoutes.isLoading && <LoadingSpinner label="Loading routes…" />}
-          {proxyRoutes.isError && (
-                <div className="alert-row">Couldn't load routes — retrying… ({(proxyRoutes.error as Error).message})</div>
-          )}
-          {proxyRoutes.data && proxyRoutes.data.desired.length === 0 && (
-            <EmptyHint>No routes yet{isRevoked ? "." : " — use “+ New Route” to expose a container port."}</EmptyHint>
-          )}
-          {proxyRoutes.data && proxyRoutes.data.desired.length > 0 && (
-            <table>
-              <thead>
-                <tr>
-                  <th>NAME</th>
-                  <th>SERVER NAME</th>
-                  <th>LISTEN</th>
-                  <th>UPSTREAM</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {proxyRoutes.data.desired.map((r) => (
-                  <tr key={r.name}>
-                    <td style={{ fontWeight: 700 }}>{r.name}</td>
-                    <td>{r.server_name || "(catch-all)"}</td>
-                    <td>:{r.listen_port}</td>
-                    <td>
-                      {r.upstream_host}:{r.upstream_port}
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                        <button
-                          type="button"
-                          className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                          onClick={() => setConfirmAction({ kind: "route", name: r.name })}
-                        >
-                          REMOVE
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          <CollapsibleForm
-            title="NEW PROXY ROUTE"
-            open={showRouteForm && !isRevoked}
-            onCancel={() => setShowRouteForm(false)}
+            }
           >
-            <form onSubmit={handleDeployRoute}>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-                <Field label="NAME">
-                  <input placeholder="web" value={routeName} onChange={(e) => setRouteName(e.target.value)} required autoFocus />
-                </Field>
-                <Field label="SERVER NAME" optional>
-                  <input placeholder="example.com" value={serverName} onChange={(e) => setServerName(e.target.value)} />
-                </Field>
-                <Field label="LISTEN PORT">
-                  <input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={listenPort}
-                    onChange={(e) => setListenPort(Number(e.target.value))}
-                    required
-                  />
-                </Field>
-                <Field label="UPSTREAM HOST">
-                  <input placeholder="127.0.0.1" value={upstreamHost} onChange={(e) => setUpstreamHost(e.target.value)} required />
-                </Field>
-                <Field label="UPSTREAM PORT">
-                  <input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={upstreamPort}
-                    onChange={(e) => setUpstreamPort(Number(e.target.value))}
-                    required
-                  />
-                </Field>
-              </div>
-              <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployRoute.isPending}>
-                {deployRoute.isPending && <LoadingSpinner dotColor="var(--panel)" />}
-                {deployRoute.isPending ? "DEPLOYING…" : "DEPLOY ROUTE"}
-              </button>
-              {deployRoute.isError && <div className="alert-row">{(deployRoute.error as Error).message}</div>}
-            </form>
-          </CollapsibleForm>
-            </>
-          )}
-          {activeTab === "images" && (
-            <>
-          {images.data?.error && <div className="alert-row">{images.data.error}</div>}
-          {images.isLoading && <LoadingSpinner label="Loading images…" />}
-          {images.isError && (
-            <div className="alert-row">Couldn't load images — retrying… ({(images.error as Error).message})</div>
-          )}
-          {images.data && !images.data.error && images.data.images.length === 0 && (
-            <EmptyHint>No images on this host yet.</EmptyHint>
-          )}
-          {images.data && images.data.images.length > 0 && (
-            <table>
-              <thead>
-                <tr>
-                  <th>IMAGE</th>
-                  <th>SIZE</th>
-                  <th>CREATED</th>
-                  <th>STATUS</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {images.data.images.map((img) => {
-                  const label = imageLabel(img);
-                  return (
-                    <tr key={img.id}>
+            {proxyRoutes.data?.error && (
+              <div className="alert-row">Last apply error: {proxyRoutes.data.error}</div>
+            )}
+            {proxyRoutes.isLoading && <LoadingSpinner label="Loading routes…" />}
+            {proxyRoutes.isError && (
+              <div className="alert-row">Couldn't load routes — retrying… ({(proxyRoutes.error as Error).message})</div>
+            )}
+            {proxyRoutes.data && proxyRoutes.data.desired.length === 0 && (
+              <EmptyHint>No routes yet{isRevoked ? "." : " — use “+ New Route” to expose a container port."}</EmptyHint>
+            )}
+            {proxyRoutes.data && proxyRoutes.data.desired.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>NAME</th>
+                    <th>SERVER NAME</th>
+                    <th>LISTEN</th>
+                    <th>UPSTREAM</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {proxyRoutes.data.desired.map((r) => (
+                    <tr key={r.name}>
+                      <td style={{ fontWeight: 700 }}>{r.name}</td>
+                      <td>{r.server_name || "(catch-all)"}</td>
+                      <td>:{r.listen_port}</td>
                       <td>
-                        <div style={{ fontWeight: 700, wordBreak: "break-all" }}>{label}</div>
-                        {(img.repo_tags.length > 1 || img.repo_tags.length === 0) && (
-                          <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
-                            {img.repo_tags.length > 1
-                              ? `+${img.repo_tags.length - 1} more tag${img.repo_tags.length === 2 ? "" : "s"}`
-                              : "dangling"}
-                          </div>
-                        )}
-                      </td>
-                      <td>{formatSize(img.size_bytes)}</td>
-                      <td>{new Date(img.created_at * 1000).toLocaleDateString()}</td>
-                      <td>
-                        <span
-                          className="badge"
-                          style={
-                            img.in_use
-                              ? { background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }
-                              : { background: "#F3F0EA", color: "#8A7E72", borderColor: "#8A7E72" }
-                          }
-                        >
-                          {img.in_use ? "IN USE" : "UNUSED"}
-                        </span>
+                        {r.upstream_host}:{r.upstream_port}
                       </td>
                       <td>
                         <div style={{ display: "flex", justifyContent: "flex-end" }}>
                           <button
                             type="button"
                             className="pixel-btn pixel-btn-danger pixel-btn-sm"
-                            onClick={() => setConfirmAction({ kind: "image", id: img.id, label })}
-                            disabled={img.in_use}
-                            title={img.in_use ? "Stop/remove the containers using this image first" : undefined}
+                            onClick={() => setConfirmAction({ kind: "route", name: r.name })}
+                          >
+                            REMOVE
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {showRouteForm && !isRevoked && (
+              <div className="form-box">
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+                  <span className="eyebrow" style={{ marginBottom: 0 }}>NEW PROXY ROUTE</span>
+                  <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={() => setShowRouteForm(false)}>
+                    CANCEL
+                  </button>
+                </div>
+                <form onSubmit={handleDeployRoute}>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                    <Field label="NAME">
+                      <input placeholder="web" value={routeName} onChange={(e) => setRouteName(e.target.value)} required autoFocus />
+                    </Field>
+                    <Field label="SERVER NAME" optional>
+                      <input placeholder="example.com" value={serverName} onChange={(e) => setServerName(e.target.value)} />
+                    </Field>
+                    <Field label="LISTEN PORT">
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={listenPort}
+                        onChange={(e) => setListenPort(Number(e.target.value))}
+                        required
+                      />
+                    </Field>
+                    <Field label="UPSTREAM HOST">
+                      <input placeholder="127.0.0.1" value={upstreamHost} onChange={(e) => setUpstreamHost(e.target.value)} required />
+                    </Field>
+                    <Field label="UPSTREAM PORT">
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={upstreamPort}
+                        onChange={(e) => setUpstreamPort(Number(e.target.value))}
+                        required
+                      />
+                    </Field>
+                  </div>
+                  <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployRoute.isPending}>
+                    {deployRoute.isPending && <LoadingSpinner dotColor="var(--panel)" />}
+                    {deployRoute.isPending ? "DEPLOYING…" : "DEPLOY ROUTE"}
+                  </button>
+                  {deployRoute.isError && <div className="alert-row">{(deployRoute.error as Error).message}</div>}
+                </form>
+              </div>
+            )}
+          </SectionPanel>
+        )}
+
+        {activeTab === "images" && (
+          <SectionPanel
+            title="IMAGES"
+            count={images.data ? images.data.images.length : undefined}
+            action={
+              <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={() => images.refetch()} disabled={images.isFetching}>
+                {images.isFetching ? "…" : "↺ REFRESH"}
+              </button>
+            }
+          >
+            {images.data?.error && <div className="alert-row">{images.data.error}</div>}
+            {images.isLoading && <LoadingSpinner label="Loading images…" />}
+            {images.isError && (
+              <div className="alert-row">Couldn't load images — retrying… ({(images.error as Error).message})</div>
+            )}
+            {images.data && !images.data.error && images.data.images.length === 0 && (
+              <EmptyHint>No images on this host yet.</EmptyHint>
+            )}
+            {images.data && images.data.images.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>IMAGE</th>
+                    <th>SIZE</th>
+                    <th>CREATED</th>
+                    <th>STATUS</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {images.data.images.map((img) => {
+                    const label = imageLabel(img);
+                    return (
+                      <tr key={img.id}>
+                        <td>
+                          <div style={{ fontWeight: 700, wordBreak: "break-all" }}>{label}</div>
+                          {(img.repo_tags.length > 1 || img.repo_tags.length === 0) && (
+                            <div className="mono" style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 3 }}>
+                              {img.repo_tags.length > 1
+                                ? `+${img.repo_tags.length - 1} more tag${img.repo_tags.length === 2 ? "" : "s"}`
+                                : "dangling"}
+                            </div>
+                          )}
+                        </td>
+                        <td>{formatSize(img.size_bytes)}</td>
+                        <td>{new Date(img.created_at * 1000).toLocaleDateString()}</td>
+                        <td>
+                          <span
+                            className="badge"
+                            style={
+                              img.in_use
+                                ? { background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }
+                                : { background: "#F3F0EA", color: "#8A7E72", borderColor: "#8A7E72" }
+                            }
+                          >
+                            {img.in_use ? "IN USE" : "UNUSED"}
+                          </span>
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                            <button
+                              type="button"
+                              className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                              onClick={() => setConfirmAction({ kind: "image", id: img.id, label })}
+                              disabled={img.in_use}
+                              title={img.in_use ? "Stop/remove the containers using this image first" : undefined}
+                            >
+                              DELETE
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </SectionPanel>
+        )}
+
+        {activeTab === "networks" && (
+          <SectionPanel
+            title="NETWORKS"
+            count={networks.data ? networks.data.networks.length : undefined}
+            action={
+              <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={() => networks.refetch()} disabled={networks.isFetching}>
+                {networks.isFetching ? "…" : "↺ REFRESH"}
+              </button>
+            }
+          >
+            {networks.data?.error && <div className="alert-row">{networks.data.error}</div>}
+            {networks.isLoading && <LoadingSpinner label="Loading networks…" />}
+            {networks.isError && (
+              <div className="alert-row">Couldn't load networks — retrying… ({(networks.error as Error).message})</div>
+            )}
+            {networks.data && !networks.data.error && networks.data.networks.length === 0 && (
+              <EmptyHint>No networks on this host.</EmptyHint>
+            )}
+            {networks.data && networks.data.networks.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>NAME</th>
+                    <th>DRIVER</th>
+                    <th>SCOPE</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {networks.data.networks.map((net) => (
+                    <tr key={net.id}>
+                      <td style={{ fontWeight: 700 }}>{net.name}</td>
+                      <td>{net.driver}</td>
+                      <td>{net.scope}</td>
+                      <td>
+                        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                          <button
+                            type="button"
+                            className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                            onClick={() => setConfirmAction({ kind: "network", id: net.id, label: net.name })}
+                            disabled={!net.removable}
+                            title={!net.removable ? "Docker built-in network — can't be removed" : undefined}
                           >
                             DELETE
                           </button>
                         </div>
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-            </>
-          )}
-        </SectionPanel>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </SectionPanel>
+        )}
+
+        {activeTab === "system" && (
+          <SectionPanel
+            title="SYSTEM"
+            action={
+              <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={() => systemInfo.refetch()} disabled={systemInfo.isFetching}>
+                {systemInfo.isFetching ? "…" : "↺ REFRESH"}
+              </button>
+            }
+          >
+            {systemInfo.isLoading && <LoadingSpinner label="Reading host info…" />}
+            {systemInfo.isError && (
+              <div className="alert-row">
+                {(systemInfo.error as { status?: number }).status === 503 || (systemInfo.error as Error).message?.includes("503")
+                  ? "Agent is offline — system info not available."
+                  : `Couldn't read system info: ${(systemInfo.error as Error).message}`}
+              </div>
+            )}
+            {systemInfo.data?.error && <div className="alert-row">{systemInfo.data.error}</div>}
+            {systemInfo.data && (
+              <table>
+                <tbody>
+                  <StatRow label="HOSTNAME" value={systemInfo.data.hostname || "—"} />
+                  <StatRow label="PRIMARY IP" value={systemInfo.data.primary_ip || "—"} />
+                  <StatRow label="OS" value={systemInfo.data.os || "—"} />
+                  <StatRow label="KERNEL" value={systemInfo.data.kernel_version || "—"} />
+                  <StatRow label="DOCKER VERSION" value={systemInfo.data.docker_version || "—"} />
+                  <StatRow label="UPTIME" value={formatDuration(systemInfo.data.uptime_seconds)} />
+                  <StatRow
+                    label="CPU"
+                    value={`${systemInfo.data.cpu_count || "?"} core${systemInfo.data.cpu_count === 1 ? "" : "s"}${systemInfo.data.cpu_model ? ` — ${systemInfo.data.cpu_model}` : ""}`}
+                  />
+                  <StatRow label="MEMORY" value={systemInfo.data.mem_total_bytes ? formatSize(systemInfo.data.mem_total_bytes) : "—"} />
+                  <StatRow
+                    label="DISK"
+                    value={
+                      systemInfo.data.disk_total_bytes
+                        ? `${formatSize(systemInfo.data.disk_used_bytes)} used / ${formatSize(systemInfo.data.disk_free_bytes)} free / ${formatSize(systemInfo.data.disk_total_bytes)} total`
+                        : "—"
+                    }
+                  />
+                </tbody>
+              </table>
+            )}
+          </SectionPanel>
+        )}
       </main>
 
       {logsModal && agentId && (
@@ -1471,6 +1711,15 @@ export function AgentDetail() {
           agentId={agentId}
           containerName={logsModal.containerName}
           onClose={() => setLogsModal(null)}
+        />
+      )}
+
+      {statusModal && (
+        <StatusModal
+          title={statusModal.title}
+          rows={statusModal.rows}
+          error={statusModal.error}
+          onClose={() => setStatusModal(null)}
         />
       )}
 

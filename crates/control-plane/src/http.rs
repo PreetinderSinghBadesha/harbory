@@ -88,6 +88,9 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/:agent_id/containers/:name/logs", get(get_container_logs))
         .route("/agents/:agent_id/images", get(list_images))
         .route("/agents/:agent_id/images/:image_id", delete(delete_image))
+        .route("/agents/:agent_id/networks", get(list_networks))
+        .route("/agents/:agent_id/networks/:network_id", delete(delete_network))
+        .route("/agents/:agent_id/system-info", get(get_system_info))
         .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
         .route("/agents/:agent_id/proxy-routes/:name", put(put_proxy_route).delete(delete_proxy_route))
         .route("/agents/:agent_id/compose-stacks", get(list_compose_stacks))
@@ -1004,5 +1007,121 @@ async fn delete_image(
     Path((agent_id, image_id)): Path<(Uuid, String)>,
 ) -> Result<Json<ImagesDto>, StatusCode> {
     images_via_stream(state, account, agent_id, image_id).await
+}
+
+#[derive(Serialize)]
+struct NetworkInfoDto {
+    id: String,
+    name: String,
+    driver: String,
+    scope: String,
+    removable: bool,
+}
+
+#[derive(Serialize)]
+struct NetworksDto {
+    networks: Vec<NetworkInfoDto>,
+    error: String,
+}
+
+/// Same shape as `images_via_stream`: list-only for GET, remove-then-list
+/// for DELETE.
+async fn networks_via_stream(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    agent_id: Uuid,
+    remove_network_id: String,
+) -> Result<Json<NetworksDto>, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let request_id = Uuid::new_v4().to_string();
+    let rx = state
+        .registry
+        .request_networks(agent_id, request_id, remove_network_id)
+        .await
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(Json(NetworksDto {
+            error: resp.error,
+            networks: resp
+                .networks
+                .into_iter()
+                .map(|n| NetworkInfoDto { id: n.id, name: n.name, driver: n.driver, scope: n.scope, removable: n.removable })
+                .collect(),
+        })),
+        Ok(Err(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
+    }
+}
+
+async fn list_networks(
+    state: State<AppState>,
+    account: AuthenticatedAccount,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<NetworksDto>, StatusCode> {
+    networks_via_stream(state, account, agent_id, String::new()).await
+}
+
+async fn delete_network(
+    state: State<AppState>,
+    account: AuthenticatedAccount,
+    Path((agent_id, network_id)): Path<(Uuid, String)>,
+) -> Result<Json<NetworksDto>, StatusCode> {
+    networks_via_stream(state, account, agent_id, network_id).await
+}
+
+#[derive(Serialize)]
+struct SystemInfoDto {
+    hostname: String,
+    os: String,
+    kernel_version: String,
+    docker_version: String,
+    cpu_count: u32,
+    cpu_model: String,
+    mem_total_bytes: u64,
+    disk_total_bytes: u64,
+    disk_used_bytes: u64,
+    disk_free_bytes: u64,
+    primary_ip: String,
+    uptime_seconds: u64,
+    error: String,
+}
+
+/// One-off host resource snapshot — same fire-and-forget pattern as logs
+/// and images, but no removal variant since there's nothing to mutate.
+async fn get_system_info(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<SystemInfoDto>, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let request_id = Uuid::new_v4().to_string();
+    let rx = state
+        .registry
+        .request_system_info(agent_id, request_id)
+        .await
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(Json(SystemInfoDto {
+            hostname: resp.hostname,
+            os: resp.os,
+            kernel_version: resp.kernel_version,
+            docker_version: resp.docker_version,
+            cpu_count: resp.cpu_count,
+            cpu_model: resp.cpu_model,
+            mem_total_bytes: resp.mem_total_bytes,
+            disk_total_bytes: resp.disk_total_bytes,
+            disk_used_bytes: resp.disk_used_bytes,
+            disk_free_bytes: resp.disk_free_bytes,
+            primary_ip: resp.primary_ip,
+            uptime_seconds: resp.uptime_seconds,
+            error: resp.error,
+        })),
+        Ok(Err(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
+    }
 }
 

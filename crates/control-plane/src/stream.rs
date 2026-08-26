@@ -10,8 +10,8 @@ use harbory_protocol::{
         agent_message::Payload as AgentPayload, agent_stream_service_server::AgentStreamService,
         container_command::Action as ContainerAction, control_plane_message::Payload as ControlPlanePayload,
         AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, GitSource as ProtoGitSource,
-        Heartbeat as HeartbeatMsg, HeartbeatAck, ImagesResponse, LogsResponse, PortMapping as ProtoPortMapping,
-        ProxyConfig, Welcome,
+        Heartbeat as HeartbeatMsg, HeartbeatAck, ImagesResponse, LogsResponse, NetworksResponse,
+        PortMapping as ProtoPortMapping, ProxyConfig, SystemInfoResponse, Welcome,
     },
 };
 use rand::RngCore;
@@ -52,6 +52,8 @@ struct ConnectedAgent {
     outbound: mpsc::Sender<Result<ControlPlaneMessage, Status>>,
     pending_logs: HashMap<String, oneshot::Sender<LogsResponse>>,
     pending_images: HashMap<String, oneshot::Sender<ImagesResponse>>,
+    pending_networks: HashMap<String, oneshot::Sender<NetworksResponse>>,
+    pending_system_info: HashMap<String, oneshot::Sender<SystemInfoResponse>>,
 }
 
 impl ConnectionRegistry {
@@ -62,7 +64,13 @@ impl ConnectionRegistry {
     async fn register(&self, agent_id: Uuid, outbound: mpsc::Sender<Result<ControlPlaneMessage, Status>>) {
         self.inner.lock().await.insert(
             agent_id,
-            ConnectedAgent { outbound, pending_logs: HashMap::new(), pending_images: HashMap::new() },
+            ConnectedAgent {
+                outbound,
+                pending_logs: HashMap::new(),
+                pending_images: HashMap::new(),
+                pending_networks: HashMap::new(),
+                pending_system_info: HashMap::new(),
+            },
         );
     }
 
@@ -136,6 +144,49 @@ impl ConnectionRegistry {
         Some(rx)
     }
 
+    /// Send a `NetworksRequest` (list-only, or remove-then-list when
+    /// `remove_network_id` is set) — same pattern as `request_images`.
+    pub async fn request_networks(
+        &self,
+        agent_id: Uuid,
+        request_id: String,
+        remove_network_id: String,
+    ) -> Option<oneshot::Receiver<NetworksResponse>> {
+        let mut guard = self.inner.lock().await;
+        let conn = guard.get_mut(&agent_id)?;
+        let (tx, rx) = oneshot::channel();
+        conn.pending_networks.insert(request_id.clone(), tx);
+        let msg = ControlPlaneMessage {
+            payload: Some(ControlPlanePayload::NetworksRequest(harbory_protocol::v1::NetworksRequest {
+                request_id: request_id.clone(),
+                remove_network_id,
+            })),
+        };
+        if conn.outbound.send(Ok(msg)).await.is_err() {
+            conn.pending_networks.remove(&request_id);
+            return None;
+        }
+        Some(rx)
+    }
+
+    /// Send a `SystemInfoRequest` — same pattern as `request_images`.
+    pub async fn request_system_info(&self, agent_id: Uuid, request_id: String) -> Option<oneshot::Receiver<SystemInfoResponse>> {
+        let mut guard = self.inner.lock().await;
+        let conn = guard.get_mut(&agent_id)?;
+        let (tx, rx) = oneshot::channel();
+        conn.pending_system_info.insert(request_id.clone(), tx);
+        let msg = ControlPlaneMessage {
+            payload: Some(ControlPlanePayload::SystemInfoRequest(harbory_protocol::v1::SystemInfoRequest {
+                request_id: request_id.clone(),
+            })),
+        };
+        if conn.outbound.send(Ok(msg)).await.is_err() {
+            conn.pending_system_info.remove(&request_id);
+            return None;
+        }
+        Some(rx)
+    }
+
     /// Resolve a pending log request. Called by `drive_connection` when
     /// the agent sends a `LogsResponse`.
     async fn resolve_logs(&self, agent_id: Uuid, response: LogsResponse) {
@@ -153,6 +204,28 @@ impl ConnectionRegistry {
         let mut guard = self.inner.lock().await;
         if let Some(conn) = guard.get_mut(&agent_id) {
             if let Some(tx) = conn.pending_images.remove(&response.request_id) {
+                let _ = tx.send(response);
+            }
+        }
+    }
+
+    /// Resolve a pending networks request. Called by `drive_connection`
+    /// when the agent sends a `NetworksResponse`.
+    async fn resolve_networks(&self, agent_id: Uuid, response: NetworksResponse) {
+        let mut guard = self.inner.lock().await;
+        if let Some(conn) = guard.get_mut(&agent_id) {
+            if let Some(tx) = conn.pending_networks.remove(&response.request_id) {
+                let _ = tx.send(response);
+            }
+        }
+    }
+
+    /// Resolve a pending system-info request. Called by `drive_connection`
+    /// when the agent sends a `SystemInfoResponse`.
+    async fn resolve_system_info(&self, agent_id: Uuid, response: SystemInfoResponse) {
+        let mut guard = self.inner.lock().await;
+        if let Some(conn) = guard.get_mut(&agent_id) {
+            if let Some(tx) = conn.pending_system_info.remove(&response.request_id) {
                 let _ = tx.send(response);
             }
         }
@@ -564,6 +637,12 @@ async fn drive_connection(
             }
             Some(Ok(AgentMessage { payload: Some(AgentPayload::ImagesResponse(resp)) })) => {
                 registry.resolve_images(agent_id, resp).await;
+            }
+            Some(Ok(AgentMessage { payload: Some(AgentPayload::NetworksResponse(resp)) })) => {
+                registry.resolve_networks(agent_id, resp).await;
+            }
+            Some(Ok(AgentMessage { payload: Some(AgentPayload::SystemInfoResponse(resp)) })) => {
+                registry.resolve_system_info(agent_id, resp).await;
             }
             Some(Ok(_)) => {
                 tracing::debug!(%agent_id, "ignoring unexpected message after handshake");

@@ -15,7 +15,9 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 
 use crate::container::ContainerManager;
 use crate::images::ImagesManager;
+use crate::networks::NetworksManager;
 use crate::proxy::ProxyManager;
+use crate::system_info::SystemInfoManager;
 
 /// What this agent believes it has last (successfully or not) applied to
 /// Nginx — compared against the control plane's desired-state hash to
@@ -83,6 +85,8 @@ pub async fn run_stream(
     compose: Arc<crate::compose::ComposeManager>,
     proxy: Arc<ProxyManager>,
     images: Arc<ImagesManager>,
+    networks: Arc<NetworksManager>,
+    system_info: Arc<SystemInfoManager>,
 ) -> anyhow::Result<()> {
     let channel = crate::transport::connect(control_plane_addr).await?;
     let mut client = AgentStreamServiceClient::new(channel);
@@ -282,6 +286,44 @@ pub async fn run_stream(
                                     };
                                     if task_tx.send(resp).await.is_err() {
                                         tracing::warn!("outbound channel closed while sending images response");
+                                    }
+                                });
+                            }
+                            Some(ControlPlanePayload::NetworksRequest(req)) => {
+                                let networks = networks.clone();
+                                let task_tx = tx.clone();
+                                tokio::spawn(async move {
+                                    let result = async {
+                                        if !req.remove_network_id.is_empty() {
+                                            networks.remove(&req.remove_network_id).await.map_err(|e| e.to_string())?;
+                                        }
+                                        networks.list().await.map_err(|e| e.to_string())
+                                    }
+                                    .await;
+                                    let (nets, error) = match result {
+                                        Ok(list) => (list, String::new()),
+                                        Err(err) => (Vec::new(), err),
+                                    };
+                                    let resp = AgentMessage {
+                                        payload: Some(harbory_protocol::v1::agent_message::Payload::NetworksResponse(
+                                            harbory_protocol::v1::NetworksResponse { request_id: req.request_id, networks: nets, error },
+                                        )),
+                                    };
+                                    if task_tx.send(resp).await.is_err() {
+                                        tracing::warn!("outbound channel closed while sending networks response");
+                                    }
+                                });
+                            }
+                            Some(ControlPlanePayload::SystemInfoRequest(req)) => {
+                                let system_info = system_info.clone();
+                                let task_tx = tx.clone();
+                                tokio::spawn(async move {
+                                    let resp = system_info.snapshot(req.request_id).await;
+                                    let resp = AgentMessage {
+                                        payload: Some(harbory_protocol::v1::agent_message::Payload::SystemInfoResponse(resp)),
+                                    };
+                                    if task_tx.send(resp).await.is_err() {
+                                        tracing::warn!("outbound channel closed while sending system info response");
                                     }
                                 });
                             }
