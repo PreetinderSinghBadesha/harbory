@@ -59,7 +59,34 @@ pub async fn clone_repo(
     git_ref: &str,
     work_dir: &PathBuf,
 ) -> Result<(), BuildError> {
-    // 1. Git clone
+    // Shallow first — this is how the established PaaS projects clone
+    // (Coolify: `git clone --depth=1 -b <branch> <token-url> <dir>`), and
+    // how Docker's own builder clones for remote contexts. A full-history
+    // clone of a large repo is the difference between seconds and minutes
+    // per deploy. Commit-SHA refs can't be fetched shallow, so on failure
+    // fall back to a full clone + explicit checkout.
+    let mut shallow = tokio::process::Command::new("git");
+    shallow
+        .args(["clone", "--depth", "1", "--recurse-submodules", "--shallow-submodules"])
+        .env("GIT_TERMINAL_PROMPT", "0");
+    if !git_ref.is_empty() {
+        shallow.args(["--branch", git_ref]);
+    }
+    let shallow_output = shallow
+        .args([repo_url, work_dir.to_str().ok_or_else(|| BuildError::Build("work dir is not valid UTF-8".into()))?])
+        .output()
+        .await
+        .map_err(|e| spawn_error("git", e))?;
+
+    if shallow_output.status.success() {
+        return Ok(());
+    }
+
+    // A failed clone can leave a partial directory behind; git refuses to
+    // clone into a non-empty dir, so clear it before retrying.
+    let _ = tokio::fs::remove_dir_all(work_dir).await;
+
+    // 1. Full clone
     let mut clone_cmd = tokio::process::Command::new("git");
     clone_cmd.arg("clone").arg("--recurse-submodules").arg(repo_url).arg(work_dir);
 

@@ -509,6 +509,20 @@ async fn put_compose_stack(
 ) -> Result<StatusCode, StatusCode> {
     require_owned_agent(&state, &account, agent_id).await?;
 
+    // Docker Compose project names must be `[a-z0-9][a-z0-9_-]*` — compose
+    // lowercases and otherwise rejects anything else, which would make the
+    // agent's observed project name (the lowercased slug) permanently
+    // disagree with the desired name here and loop redeploys forever.
+    // Reject up front with a clear message instead.
+    let valid = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        && name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    if !valid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     let repo_url = req.repo_url;
 
     let stack = crate::store::DesiredComposeStack {

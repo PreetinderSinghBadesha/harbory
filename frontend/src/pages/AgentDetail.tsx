@@ -1198,7 +1198,7 @@ export function AgentDetail() {
                 <form onSubmit={handleDeployComposeStack}>
                   <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
                     <Field label="STACK NAME">
-                      <input placeholder="my-stack" value={composeName} onChange={(e) => setComposeName(e.target.value)} required autoFocus />
+                      <input placeholder="lowercase, digits, - and _" value={composeName} onChange={(e) => setComposeName(e.target.value)} required autoFocus />
                     </Field>
                     <Field label="REPOSITORY">
                       <select value={composeSelectedRepo} onChange={(e) => setComposeSelectedRepo(e.target.value)} required disabled={!hasRepos}>
