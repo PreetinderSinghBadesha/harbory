@@ -825,8 +825,9 @@ export function AgentDetail() {
   const sprite = agentId ? spriteFor(agentId) : null;
 
   const statChips: string[] = [];
-  if (containers.data) {
-    statChips.push(`${activeContainers.length} CONTAINER${activeContainers.length === 1 ? "" : "S"}`);
+  if (containers.data && dockerContainers.data) {
+    const n = activeContainers.length + unmanagedContainers.length;
+    statChips.push(`${n} CONTAINER${n === 1 ? "" : "S"}`);
   }
   if (proxyRoutes.data) {
     const n = proxyRoutes.data.desired.length;
@@ -842,7 +843,11 @@ export function AgentDetail() {
 
   const tabs: { key: ResourceTab; label: string; count?: number }[] = [
     { key: "system", label: "SYSTEM" },
-    { key: "container", label: "CONTAINERS", count: containers.data ? activeContainers.length : undefined },
+    {
+      key: "container",
+      label: "CONTAINERS",
+      count: containers.data && dockerContainers.data ? activeContainers.length + unmanagedContainers.length : undefined,
+    },
     { key: "images", label: "IMAGES", count: images.data ? images.data.images.length : undefined },
     { key: "networks", label: "NETWORKS", count: networks.data ? networks.data.networks.length : undefined },
     { key: "routes", label: "ROUTES", count: proxyRoutes.data ? proxyRoutes.data.desired.length : undefined },
