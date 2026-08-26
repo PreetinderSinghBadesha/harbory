@@ -60,12 +60,21 @@ impl ComposeManager {
 
         // 2. Run docker compose up -d
         tracing::info!(name = %spec.name, "running docker compose up -d");
-        
+
         let file_arg = if spec.compose_file_path.is_empty() {
             "docker-compose.yml".to_string()
         } else {
             spec.compose_file_path.clone()
         };
+
+        // Compose files written for a shared reverse-proxy setup often
+        // declare `networks: web: external: true`, assuming that network
+        // already exists on the host. Harbory deploys each stack standalone
+        // with no shared infra, so that network never exists yet — without
+        // this, `up` fails outright with "declared as external, but could
+        // not be found" and zero containers get created. Create any missing
+        // external networks up front so those compose files work as-is.
+        Self::ensure_external_networks(&work_dir, &file_arg, &spec.name).await;
 
         let output = Command::new("docker")
             .arg("compose")
@@ -97,6 +106,95 @@ impl ComposeManager {
         }
 
         Ok(())
+    }
+
+    /// Resolves the compose file's declared networks via `docker compose
+    /// config` and `docker network create`s any marked `external: true`
+    /// that don't exist yet on this host. Best-effort: a failure here just
+    /// means `up` fails with its own (now-familiar) error, same as before
+    /// this existed — never blocks the deploy on its own.
+    async fn ensure_external_networks(work_dir: &PathBuf, file_arg: &str, project_name: &str) {
+        let output = Command::new("docker")
+            .arg("compose")
+            .arg("-f")
+            .arg(file_arg)
+            .arg("-p")
+            .arg(project_name)
+            .arg("config")
+            .arg("--format")
+            .arg("json")
+            .current_dir(work_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+
+        let Ok(output) = output else { return };
+        if !output.status.success() {
+            return;
+        }
+
+        let Ok(config): Result<serde_json::Value, _> = serde_json::from_slice(&output.stdout) else {
+            return;
+        };
+        let Some(networks) = config.get("networks").and_then(|n| n.as_object()) else {
+            return;
+        };
+
+        let existing = Self::list_network_names().await;
+
+        for (key, def) in networks {
+            let is_external = match def.get("external") {
+                Some(serde_json::Value::Bool(b)) => *b,
+                Some(serde_json::Value::Object(_)) => true,
+                _ => false,
+            };
+            if !is_external {
+                continue;
+            }
+            let network_name = def
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or(key.as_str());
+
+            if existing.contains(network_name) {
+                continue;
+            }
+
+            tracing::info!(network = %network_name, "creating missing external network declared by compose file");
+            let create = Command::new("docker")
+                .args(["network", "create", network_name])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await;
+            if let Ok(create) = create {
+                if !create.status.success() {
+                    tracing::warn!(
+                        network = %network_name,
+                        stderr = %String::from_utf8_lossy(&create.stderr),
+                        "failed to create external network"
+                    );
+                }
+            }
+        }
+    }
+
+    async fn list_network_names() -> std::collections::HashSet<String> {
+        let output = Command::new("docker")
+            .args(["network", "ls", "--format", "{{.Name}}"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+        match output {
+            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect(),
+            _ => std::collections::HashSet::new(),
+        }
     }
 
     pub async fn remove(&self, name: &str) -> Result<(), DeployError> {
