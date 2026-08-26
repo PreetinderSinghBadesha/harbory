@@ -8,7 +8,8 @@ what they're doing at every step.
 curl -fsSL https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-control-plane.sh | bash
 # then edit /etc/harbory/control-plane.env and: sudo systemctl start harbory-control-plane
 
-# On a host you want to manage as an agent (needs Docker; nginx optional):
+# On a host you want to manage as an agent (Docker is a hard requirement;
+# nginx and git are installed automatically via apt/yum if missing):
 curl -fsSL https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-agent.sh | bash
 # then, once you have a pairing token from the dashboard:
 sudo harbory-agent-pair <pairing-token>
@@ -52,10 +53,32 @@ That user needs two things a normal account doesn't have:
      invokes instead of `nginx` directly (`NGINX_BINARY_PATH` in
      `/etc/harbory/agent.env`).
 
-If nginx isn't installed on the host, the installer skips this step —
-the agent only touches nginx when a `ProxyConfig` command actually
-arrives (see `docs/proxy-management.md`), so a container-only host
-doesn't need it.
+The installer installs nginx (and `git`, needed for git-sourced
+container deploys — see "Deploying from a GitHub repo" below) via
+`apt-get`/`yum` if either is missing, so this setup normally always
+runs. It only skips if neither package manager is available to install
+them with, or if the generated sudoers rule fails validation — either
+way you get a clear message rather than a silent gap, since the agent
+only touches nginx when a `ProxyConfig` command actually arrives (see
+`docs/proxy-management.md`), so a container-only host can still work
+without it.
+
+Right after the sudoers rule is installed, the script also **runs the
+whole chain end to end** — `sudo -u harbory-agent
+harbory-nginx-ctl -t` — and prints a clear OK/FAILED instead of letting
+a broken link only surface later as an opaque "Last apply error" on the
+dashboard with no access to that host's logs to debug it from. If you
+ever see FAILED here, proxy-route deploys won't work until it's fixed;
+the output tells you which link in the chain broke.
+
+Separately, the systemd unit itself has an `ExecStartPre` that runs
+`docker info` as the same `harbory-agent` user before the real process
+starts — if Docker ever breaks after install (uninstalled, daemon down),
+`systemctl status harbory-agent` shows Docker's own error directly
+instead of a Rust panic buried in the journal. This only helps local
+diagnosis, though: a broken Docker still just shows as "offline" on the
+dashboard, since the agent can't reach the control plane to report
+anything more specific.
 
 The control plane has no comparable privilege need — it only binds
 `127.0.0.1:8080`/`:50051` (unprivileged ports; a real reverse proxy in
@@ -87,6 +110,42 @@ already-paired agent keeps working after any redeploy — just re-run
 `install-agent.sh`, no need to re-pair). Pass `--force` to wipe the stored
 credential and re-pair with a fresh token — useful if an agent was
 revoked and needs to rejoin under a new pairing token.
+
+## Deploying from a GitHub repo
+
+Beyond a plain image, a container can be built and deployed straight
+from a git repo (public or private) — the agent clones and `docker
+build`s it locally, no registry involved. This needs the control plane
+to have a GitHub OAuth App connected, which is entirely optional
+config, not something `install-control-plane.sh` sets up for you:
+
+1. Register an OAuth App on GitHub (Settings → Developer settings →
+   OAuth Apps → New OAuth App). Set **Authorization callback URL** to
+   `{your control-plane HTTP domain}/github/oauth/callback`. Uncheck
+   **"Expire user access tokens"** — leaving it checked issues a
+   short-lived token plus a refresh token, and the control plane
+   doesn't implement the refresh flow (yet), so a connection would
+   silently stop working after ~8 hours.
+2. Add four env vars to `/etc/harbory/control-plane.env`:
+   ```
+   GITHUB_CLIENT_ID=<from the OAuth App>
+   GITHUB_CLIENT_SECRET=<from the OAuth App>
+   GITHUB_REDIRECT_URI=https://your-control-plane-domain/github/oauth/callback
+   FRONTEND_URL=https://your-dashboard-domain
+   ```
+   `GITHUB_REDIRECT_URI` must match the callback URL registered in step
+   1 exactly. `FRONTEND_URL` is where the OAuth flow redirects the
+   browser back to once it completes (the Settings page).
+3. `sudo systemctl restart harbory-control-plane`.
+
+Without these set, the `/github/*` routes just return 503 — the control
+plane still starts and runs fine, this is additive, not required.
+Nothing agent-side needs configuring for this: `install-agent.sh`
+already ensures `git` is present (see "Why the agent needs sudo at all"
+above), and the credential for a private repo is embedded into the
+clone URL only in the message the control plane sends to the agent at
+deploy time — never written to `desired_containers` or any file on
+disk beyond that one ephemeral clone.
 
 ## Applying this to an already-deployed control plane
 

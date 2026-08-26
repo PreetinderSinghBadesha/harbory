@@ -55,7 +55,8 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "docker not found. harbory-agent requires Docker and fails fast without it — install Docker first." >&2
   exit 1
 fi
-if ! sudo docker info >/dev/null 2>&1; then
+DOCKER_BIN="$(command -v docker)"
+if ! sudo "$DOCKER_BIN" info >/dev/null 2>&1; then
   echo "docker is installed but not usable via sudo — is the docker daemon running?" >&2
   exit 1
 fi
@@ -167,9 +168,25 @@ EOF
 
   if [ -f "$SUDOERS_FILE" ]; then
     log "Nginx reload permission installed at $SUDOERS_FILE (scoped to nginx -t / nginx -s reload)"
-    if ! grep -q "^NGINX_BINARY_PATH=" "$ENV_FILE" 2>/dev/null; then
-      echo "NGINX_BINARY_PATH=$NGINX_WRAPPER" | sudo tee -a "$ENV_FILE" >/dev/null
+    # Idempotent set, not append-if-missing — a stale value from an
+    # earlier run (or a manual edit) would otherwise never get corrected,
+    # since a rerun would see the key already present and skip it.
+    sudo sed -i '/^NGINX_BINARY_PATH=/d' "$ENV_FILE"
+    echo "NGINX_BINARY_PATH=$NGINX_WRAPPER" | sudo tee -a "$ENV_FILE" >/dev/null
+
+    # Self-test the full chain right now — service user -> wrapper ->
+    # sudo -> nginx -t — rather than letting a broken link only surface
+    # later as an opaque "Last apply error" on the dashboard with no
+    # access to this host's logs to debug it from.
+    log "Verifying $SERVICE_USER can reach nginx through the wrapper..."
+    if sudo -u "$SERVICE_USER" "$NGINX_WRAPPER" -t 2>/tmp/harbory-nginx-selftest.log; then
+      log "OK: $SERVICE_USER -> $NGINX_WRAPPER -> nginx -t works."
+    else
+      echo "FAILED: '$SERVICE_USER' could not run nginx -t through $NGINX_WRAPPER. Output:" >&2
+      cat /tmp/harbory-nginx-selftest.log >&2
+      echo "Proxy-route deploys will fail until this is fixed — check the sudoers rule ($SUDOERS_FILE) and $NGINX_WRAPPER." >&2
     fi
+    rm -f /tmp/harbory-nginx-selftest.log
   fi
 else
   log "nginx not installed — skipping proxy-route permission setup (agent only touches nginx if a ProxyConfig is ever sent to it)"
@@ -184,10 +201,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=$SERVICE_USER
+Group=$SERVICE_USER
 WorkingDirectory=$DATA_DIR
 EnvironmentFile=$ENV_FILE
+# Pre-flight: the binary itself already fails fast if Docker isn't
+# reachable (container management is its whole job — see main.rs), but
+# that shows up as a Rust panic buried in the journal after a process
+# actually started. This fails at the same point, before that, so
+# 'systemctl status' shows Docker's own error directly instead — and
+# runs as $SERVICE_USER (same as ExecStart), so it's testing the exact
+# access path the real process uses, not just whether Docker exists.
+ExecStartPre=$DOCKER_BIN info
 ExecStart=$BIN_PATH
 Restart=always
 RestartSec=2

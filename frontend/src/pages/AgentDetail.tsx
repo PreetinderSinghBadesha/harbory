@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
 import { situationFor, spriteFor } from "../lib/agentSprite";
 import { fetchGitHubConnection, repoUrlFor } from "../lib/github";
+import { LoadingSpinner } from "../components/LoadingSpinner";
 import "../styles/GameHud.css";
 
 interface AgentSummary {
@@ -81,7 +82,7 @@ interface ImagesDto {
   error: string;
 }
 
-type DeployTab = "container" | "compose";
+type ResourceTab = "container" | "compose" | "routes" | "images";
 
 type PendingAction =
   | { kind: "container"; name: string }
@@ -194,6 +195,7 @@ function ConfirmDialog({
             disabled={busy}
             autoFocus
           >
+            {busy && <LoadingSpinner dotColor="var(--panel)" />}
             {busy ? "WORKING…" : copy.confirmLabel}
           </button>
         </div>
@@ -568,7 +570,7 @@ export function AgentDetail() {
     refetchInterval: 5000,
   });
 
-  const [deployTab, setDeployTab] = useState<DeployTab>("container");
+  const [activeTab, setActiveTab] = useState<ResourceTab>("container");
   const [showContainerForm, setShowContainerForm] = useState(false);
   const [showComposeForm, setShowComposeForm] = useState(false);
   const [showRouteForm, setShowRouteForm] = useState(false);
@@ -909,50 +911,106 @@ export function AgentDetail() {
           </div>
         )}
 
+        <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className={activeTab === "container" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+            onClick={() => setActiveTab("container")}
+          >
+            CONTAINERS
+            {containers.data && <span className="badge" style={{ marginLeft: 8 }}>{activeContainers.length}</span>}
+          </button>
+          <button
+            type="button"
+            className={activeTab === "compose" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+            onClick={() => setActiveTab("compose")}
+          >
+            COMPOSE
+            {composeStacks.data && <span className="badge" style={{ marginLeft: 8 }}>{activeCompose.length}</span>}
+          </button>
+          <button
+            type="button"
+            className={activeTab === "routes" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+            onClick={() => setActiveTab("routes")}
+          >
+            ROUTES
+            {proxyRoutes.data && <span className="badge" style={{ marginLeft: 8 }}>{proxyRoutes.data.desired.length}</span>}
+          </button>
+          <button
+            type="button"
+            className={activeTab === "images" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
+            onClick={() => setActiveTab("images")}
+          >
+            IMAGES
+            {images.data && <span className="badge" style={{ marginLeft: 8 }}>{images.data.images.length}</span>}
+          </button>
+        </div>
+
         <SectionPanel
-          title="DEPLOYMENTS"
-          count={containers.data || composeStacks.data ? deploymentCount : undefined}
+          title={
+            activeTab === "container"
+              ? "CONTAINERS"
+              : activeTab === "compose"
+                ? "COMPOSE"
+                : activeTab === "routes"
+                  ? "PROXY ROUTES"
+                  : "IMAGES"
+          }
+          count={
+            activeTab === "container"
+              ? (containers.data ? activeContainers.length : undefined)
+              : activeTab === "compose"
+                ? (composeStacks.data ? activeCompose.length : undefined)
+                : activeTab === "routes"
+                  ? (proxyRoutes.data ? proxyRoutes.data.desired.length : undefined)
+                  : (images.data ? images.data.images.length : undefined)
+          }
           action={
-            !isRevoked && (
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            activeTab === "container" ? (
+              !isRevoked && (
                 <button
                   type="button"
-                  className={deployTab === "container" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                  onClick={() => setDeployTab("container")}
+                  className={showContainerForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
+                  onClick={() => setShowContainerForm((v) => !v)}
                 >
-                  CONTAINERS
+                  {showContainerForm ? "✕ CLOSE" : "+ NEW CONTAINER"}
                 </button>
+              )
+            ) : activeTab === "compose" ? (
+              !isRevoked && (
                 <button
                   type="button"
-                  className={deployTab === "compose" ? "pixel-btn pixel-btn-sm" : "pixel-btn pixel-btn-ghost pixel-btn-sm"}
-                  onClick={() => setDeployTab("compose")}
+                  className={showComposeForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
+                  onClick={() => setShowComposeForm((v) => !v)}
                 >
-                  COMPOSE
+                  {showComposeForm ? "✕ CLOSE" : "+ NEW STACK"}
                 </button>
-                {deployTab === "container" ? (
-                  <button
-                    type="button"
-                    className={showContainerForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
-                    onClick={() => setShowContainerForm((v) => !v)}
-                  >
-                    {showContainerForm ? "✕ CLOSE" : "+ NEW CONTAINER"}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className={showComposeForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
-                    onClick={() => setShowComposeForm((v) => !v)}
-                  >
-                    {showComposeForm ? "✕ CLOSE" : "+ NEW STACK"}
-                  </button>
-                )}
-              </div>
+              )
+            ) : activeTab === "routes" ? (
+              !isRevoked && (
+                <button
+                  type="button"
+                  className={showRouteForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
+                  onClick={() => setShowRouteForm((v) => !v)}
+                >
+                  {showRouteForm ? "✕ CLOSE" : "+ NEW ROUTE"}
+                </button>
+              )
+            ) : (
+              <button
+                type="button"
+                className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                onClick={() => images.refetch()}
+                disabled={images.isFetching}
+              >
+                {images.isFetching ? "…" : "↺ REFRESH"}
+              </button>
             )
           }
         >
-          {deployTab === "container" ? (
+          {activeTab === "container" && (
             <>
-              {containers.isLoading && <EmptyHint>Loading containers…</EmptyHint>}
+              {containers.isLoading && <LoadingSpinner label="Loading containers…" />}
               {containers.isError && (
                 <div className="alert-row">Couldn't load containers — retrying… ({(containers.error as Error).message})</div>
               )}
@@ -1100,15 +1158,17 @@ export function AgentDetail() {
                     className="pixel-btn pixel-btn-sm"
                     disabled={deployContainer.isPending || (deploySource === "github" && !hasRepos)}
                   >
+                    {deployContainer.isPending && <LoadingSpinner dotColor="var(--panel)" />}
                     {deployContainer.isPending ? "DEPLOYING…" : "DEPLOY"}
                   </button>
                   {deployContainer.isError && <div className="alert-row">{(deployContainer.error as Error).message}</div>}
                 </form>
               </CollapsibleForm>
             </>
-          ) : (
+          )}
+          {activeTab === "compose" && (
             <>
-              {composeStacks.isLoading && <EmptyHint>Loading stacks…</EmptyHint>}
+              {composeStacks.isLoading && <LoadingSpinner label="Loading stacks…" />}
               {composeStacks.isError && (
                 <div className="alert-row">Couldn't load stacks — retrying… ({(composeStacks.error as Error).message})</div>
               )}
@@ -1229,6 +1289,7 @@ export function AgentDetail() {
                     <EnvVarsEditor vars={composeEnvVars} onChange={setComposeEnvVars} />
                   </div>
                   <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployComposeStack.isPending || !hasRepos}>
+                    {deployComposeStack.isPending && <LoadingSpinner dotColor="var(--panel)" />}
                     {deployComposeStack.isPending ? "DEPLOYING…" : "DEPLOY STACK"}
                   </button>
                   {deployComposeStack.isError && <div className="alert-row">{(deployComposeStack.error as Error).message}</div>}
@@ -1236,27 +1297,12 @@ export function AgentDetail() {
               </CollapsibleForm>
             </>
           )}
-        </SectionPanel>
-
-        <SectionPanel
-          title="PROXY ROUTES"
-          count={proxyRoutes.data ? proxyRoutes.data.desired.length : undefined}
-          action={
-            !isRevoked && (
-              <button
-                type="button"
-                className={showRouteForm ? "pixel-btn pixel-btn-ghost pixel-btn-sm" : "pixel-btn pixel-btn-sm"}
-                onClick={() => setShowRouteForm((v) => !v)}
-              >
-                {showRouteForm ? "✕ CLOSE" : "+ NEW ROUTE"}
-              </button>
-            )
-          }
-        >
+          {activeTab === "routes" && (
+            <>
           {proxyRoutes.data?.error && (
             <div className="alert-row">Last apply error: {proxyRoutes.data.error}</div>
           )}
-          {proxyRoutes.isLoading && <EmptyHint>Loading routes…</EmptyHint>}
+          {proxyRoutes.isLoading && <LoadingSpinner label="Loading routes…" />}
           {proxyRoutes.isError && (
                 <div className="alert-row">Couldn't load routes — retrying… ({(proxyRoutes.error as Error).message})</div>
           )}
@@ -1338,29 +1384,18 @@ export function AgentDetail() {
                 </Field>
               </div>
               <button type="submit" className="pixel-btn pixel-btn-sm" disabled={deployRoute.isPending}>
+                {deployRoute.isPending && <LoadingSpinner dotColor="var(--panel)" />}
                 {deployRoute.isPending ? "DEPLOYING…" : "DEPLOY ROUTE"}
               </button>
               {deployRoute.isError && <div className="alert-row">{(deployRoute.error as Error).message}</div>}
             </form>
           </CollapsibleForm>
-        </SectionPanel>
-
-        <SectionPanel
-          title="IMAGES"
-          count={images.data ? images.data.images.length : undefined}
-          action={
-            <button
-              type="button"
-              className="pixel-btn pixel-btn-ghost pixel-btn-sm"
-              onClick={() => images.refetch()}
-              disabled={images.isFetching}
-            >
-              {images.isFetching ? "…" : "↺ REFRESH"}
-            </button>
-          }
-        >
+            </>
+          )}
+          {activeTab === "images" && (
+            <>
           {images.data?.error && <div className="alert-row">{images.data.error}</div>}
-          {images.isLoading && <EmptyHint>Loading images…</EmptyHint>}
+          {images.isLoading && <LoadingSpinner label="Loading images…" />}
           {images.isError && (
             <div className="alert-row">Couldn't load images — retrying… ({(images.error as Error).message})</div>
           )}
@@ -1425,6 +1460,8 @@ export function AgentDetail() {
                 })}
               </tbody>
             </table>
+          )}
+            </>
           )}
         </SectionPanel>
       </main>

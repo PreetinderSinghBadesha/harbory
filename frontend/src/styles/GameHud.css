@@ -205,6 +205,27 @@
 .game-hud .alert-row-warn { border-color: var(--gold-dark); background: #FFF9E5; color: var(--clay-dark); }
 .game-hud .alert-row-info { border-color: var(--hp-dark); background: #E9F9EF; color: var(--hp-dark); }
 
+/* Three pixel-square dots bouncing in sequence — the loading state,
+   built out of the same bordered-square language as .hp-pip rather than
+   a generic spinner, so it reads as part of this UI, not a bolted-on
+   library widget. */
+.game-hud .pixel-spinner { display: inline-flex; align-items: flex-end; gap: 4px; height: 12px; }
+.game-hud .pixel-spinner span {
+  width: 6px; height: 6px;
+  background: var(--pixel-spinner-color, var(--clay));
+  border: 2px solid var(--ink);
+  animation: pixel-spinner-bounce 0.9s ease-in-out infinite;
+}
+.game-hud .pixel-spinner span:nth-child(2) { animation-delay: 0.12s; }
+.game-hud .pixel-spinner span:nth-child(3) { animation-delay: 0.24s; }
+@keyframes pixel-spinner-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.55; }
+  40% { transform: translateY(-7px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .game-hud .pixel-spinner span { animation: none; opacity: 1; }
+}
+
 @keyframes hud-blip { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* Purely decorative sprite motion — not tied to real online/offline state,

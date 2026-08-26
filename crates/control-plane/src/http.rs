@@ -781,7 +781,7 @@ async fn github_oauth_callback(State(state): State<AppState>, Query(params): Que
         // redirect.
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
-    let error_redirect = Ok(Redirect::to(&format!("{frontend_url}/dashboard?github=error")));
+    let error_redirect = Ok(Redirect::to(&format!("{frontend_url}/settings?github=error")));
 
     if params.error.is_some() {
         return error_redirect;
@@ -825,7 +825,7 @@ async fn github_oauth_callback(State(state): State<AppState>, Query(params): Que
         .record_audit_event(AuditEventType::GitHubConnected, Some(account_id), None, serde_json::json!({ "github_login": github_login }))
         .await;
 
-    Ok(Redirect::to(&format!("{frontend_url}/dashboard?github=connected")))
+    Ok(Redirect::to(&format!("{frontend_url}/settings?github=connected")))
 }
 
 #[derive(Serialize)]

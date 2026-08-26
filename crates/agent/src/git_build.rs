@@ -4,9 +4,12 @@
 //! missing ones surface as a named, actionable error (see spawn_error)
 //! rather than a bare ENOENT.
 
+use std::path::PathBuf;
+use std::time::Duration;
+
 use bollard::Docker;
 use harbory_protocol::v1::GitSource;
-use std::path::PathBuf;
+use tokio::process::Command;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -15,6 +18,18 @@ pub enum BuildError {
     #[error("build failed: {0}")]
     Build(String),
 }
+
+/// Both cloning and building are network/CPU-bound and can hang (a stalled
+/// connection, a Dockerfile step waiting on something that never answers).
+/// Without a bound, a hung build wedges more than just this one deploy —
+/// it blocks the agent's single per-connection message loop, so
+/// heartbeats and every other command on that stream stall too until the
+/// process is killed. These are generous on purpose (clone: most repos in
+/// seconds, allow minutes for a slow host; build: real Dockerfiles can
+/// legitimately take several minutes) — the point is a bound exists at
+/// all, not that it's tight.
+const CLONE_TIMEOUT: Duration = Duration::from_secs(180);
+const BUILD_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// Turns a spawn failure into something an operator can act on. The
 /// common case is the binary simply not being installed on this host
@@ -28,6 +43,18 @@ fn spawn_error(binary: &str, err: std::io::Error) -> BuildError {
         ))
     } else {
         BuildError::Build(format!("failed to execute '{binary}': {err}"))
+    }
+}
+
+/// Runs `cmd`, bounded by `timeout`, and maps every failure mode (spawn
+/// failure, timeout, nonzero exit is left to the caller) into a
+/// `BuildError` — the one place that knows how to name the binary in the
+/// error either way.
+async fn run(mut cmd: Command, binary: &str, timeout: Duration) -> Result<std::process::Output, BuildError> {
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(err)) => Err(spawn_error(binary, err)),
+        Err(_elapsed) => Err(BuildError::Build(format!("'{binary}' timed out after {}s", timeout.as_secs()))),
     }
 }
 
@@ -54,29 +81,25 @@ fn tag_for(logical_name: &str) -> String {
     format!("harbory-build-{slug}:latest")
 }
 
-pub async fn clone_repo(
-    repo_url: &str,
-    git_ref: &str,
-    work_dir: &PathBuf,
-) -> Result<(), BuildError> {
+pub async fn clone_repo(repo_url: &str, git_ref: &str, work_dir: &PathBuf) -> Result<(), BuildError> {
+    let work_dir_str = work_dir.to_str().ok_or_else(|| BuildError::Build("work dir is not valid UTF-8".into()))?;
+
     // Shallow first — this is how the established PaaS projects clone
     // (Coolify: `git clone --depth=1 -b <branch> <token-url> <dir>`), and
     // how Docker's own builder clones for remote contexts. A full-history
     // clone of a large repo is the difference between seconds and minutes
-    // per deploy. Commit-SHA refs can't be fetched shallow, so on failure
-    // fall back to a full clone + explicit checkout.
-    let mut shallow = tokio::process::Command::new("git");
+    // per deploy. Commit-SHA refs can't be fetched shallow (GitHub
+    // doesn't allow `--depth 1 --branch <sha>` for an arbitrary sha), so
+    // on failure fall back to a full clone + explicit checkout.
+    let mut shallow = Command::new("git");
     shallow
         .args(["clone", "--depth", "1", "--recurse-submodules", "--shallow-submodules"])
         .env("GIT_TERMINAL_PROMPT", "0");
     if !git_ref.is_empty() {
         shallow.args(["--branch", git_ref]);
     }
-    let shallow_output = shallow
-        .args([repo_url, work_dir.to_str().ok_or_else(|| BuildError::Build("work dir is not valid UTF-8".into()))?])
-        .output()
-        .await
-        .map_err(|e| spawn_error("git", e))?;
+    shallow.args([repo_url, work_dir_str]);
+    let shallow_output = run(shallow, "git", CLONE_TIMEOUT).await?;
 
     if shallow_output.status.success() {
         return Ok(());
@@ -86,32 +109,21 @@ pub async fn clone_repo(
     // clone into a non-empty dir, so clear it before retrying.
     let _ = tokio::fs::remove_dir_all(work_dir).await;
 
-    // 1. Full clone
-    let mut clone_cmd = tokio::process::Command::new("git");
-    clone_cmd.arg("clone").arg("--recurse-submodules").arg(repo_url).arg(work_dir);
-
-    // Prevent git from asking for interactive credentials
-    clone_cmd.env("GIT_TERMINAL_PROMPT", "0");
-
-    let clone_output =
-        clone_cmd.output().await.map_err(|e| spawn_error("git", e))?;
+    let mut clone_cmd = Command::new("git");
+    clone_cmd.arg("clone").arg("--recurse-submodules").arg(repo_url).arg(work_dir).env("GIT_TERMINAL_PROMPT", "0");
+    let clone_output = run(clone_cmd, "git", CLONE_TIMEOUT).await?;
     if !clone_output.status.success() {
         let stderr = String::from_utf8_lossy(&clone_output.stderr);
-        return Err(BuildError::Build(format!("Git clone failed:\n{}", stderr)));
+        return Err(BuildError::Build(format!("git clone failed:\n{stderr}")));
     }
 
-    // 2. Git checkout ref (if specified)
     if !git_ref.is_empty() {
-        let checkout_output = tokio::process::Command::new("git")
-            .current_dir(work_dir)
-            .args(["checkout", git_ref])
-            .output()
-            .await
-            .map_err(|e| spawn_error("git", e))?;
-            
+        let mut checkout_cmd = Command::new("git");
+        checkout_cmd.current_dir(work_dir).args(["checkout", git_ref]);
+        let checkout_output = run(checkout_cmd, "git", CLONE_TIMEOUT).await?;
         if !checkout_output.status.success() {
             let stderr = String::from_utf8_lossy(&checkout_output.stderr);
-            return Err(BuildError::Build(format!("Git checkout failed:\n{}", stderr)));
+            return Err(BuildError::Build(format!("git checkout failed:\n{stderr}")));
         }
     }
 
@@ -127,29 +139,37 @@ pub async fn clone_repo(
 pub async fn build(_docker: &Docker, logical_name: &str, source: &GitSource) -> Result<String, BuildError> {
     let tag = tag_for(logical_name);
     let dockerfile = if source.dockerfile_path.is_empty() { "Dockerfile" } else { source.dockerfile_path.as_str() };
-    
-    let temp_dir = tempfile::tempdir_in(".").map_err(|e| BuildError::Build(format!("Failed to create temp dir: {}", e)))?;
+
+    let temp_dir = tempfile::tempdir_in(".").map_err(|e| BuildError::Build(format!("failed to create temp dir: {e}")))?;
     let repo_dir = temp_dir.path().join("repo");
 
     clone_repo(&source.repo_url, &source.git_ref, &repo_dir).await?;
 
-    // 3. Docker build
-    let output = tokio::process::Command::new("docker")
-        .current_dir(&repo_dir)
-        .args(["build", "-t", &tag, "-f", dockerfile, "."])
-        .env("DOCKER_BUILDKIT", "1")
-        .output()
-        .await
-        .map_err(|e| spawn_error("docker", e))?;
+    // `.git` (history + submodule checkouts) has no purpose inside the
+    // build context and would otherwise get uploaded to the Docker
+    // daemon in full on every deploy — best-effort, not fatal if it
+    // fails, since it's a size optimization, not a correctness concern.
+    let _ = tokio::fs::remove_dir_all(repo_dir.join(".git")).await;
+
+    // No forced DOCKER_BUILDKIT=1: if it's set but the `buildx` CLI
+    // plugin isn't installed (common on distro-packaged Docker, e.g.
+    // Ubuntu's `docker.io` apt package rather than Docker's own
+    // `docker-ce` repo), `docker build` hard-fails with "BuildKit is
+    // enabled but the buildx component is missing" instead of falling
+    // back — every single git-sourced deploy would fail on such a host.
+    // Nothing here needs a BuildKit-only feature (no --mount=type=secret,
+    // no multi-platform), so there's no reason to force it and every
+    // reason not to.
+    let mut build_cmd = Command::new("docker");
+    build_cmd.current_dir(&repo_dir).args(["build", "-t", &tag, "-f", dockerfile, "."]);
+    let output = run(build_cmd, "docker", BUILD_TIMEOUT).await?;
 
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(BuildError::Build(format!(
-            "Docker build failed with exit code: {}\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+            "docker build failed (exit {}):\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}",
             output.status.code().unwrap_or(-1),
-            stdout,
-            stderr
         )));
     }
 

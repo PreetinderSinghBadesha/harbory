@@ -7,6 +7,7 @@ import { Docs } from "./pages/Docs";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
 import { AgentDetail } from "./pages/AgentDetail";
+import { Settings } from "./pages/Settings";
 import "./App.css";
 
 const queryClient = new QueryClient();
@@ -23,6 +24,7 @@ export default function App() {
             <Route element={<ProtectedRoute />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/agents/:agentId" element={<AgentDetail />} />
+              <Route path="/settings" element={<Settings />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

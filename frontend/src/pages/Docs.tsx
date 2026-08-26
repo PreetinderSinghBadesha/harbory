@@ -33,6 +33,7 @@ const TOC = [
   { id: "permissions", label: "Why sudo is needed" },
   { id: "created", label: "What gets created" },
   { id: "control-plane", label: "Running a control plane" },
+  { id: "github", label: "Deploying from a repo" },
   { id: "redeploy", label: "Redeploying & re-pairing" },
   { id: "sprites", label: "The robots" },
 ];
@@ -215,9 +216,11 @@ export function Docs() {
                 exits immediately if it can't — container management is its core job, not an optional feature.
               </div>
               <div className="alert-row alert-row-warn">
-                <strong>nginx is optional.</strong> The agent only touches nginx when a reverse-proxy route is
-                actually pushed to it. On a host with no nginx installed, the installer skips that setup entirely
-                and container-only deployment still works.
+                <strong>nginx and git are handled for you.</strong> The installer installs both automatically (via
+                <span className="mono"> apt</span>/<span className="mono">yum</span>) if either is missing — nginx
+                for proxy routes, git for deploying containers from a repo. Neither is strictly required: a
+                container-only host works fine without nginx, and git only matters if you use the GitHub deploy
+                path below.
               </div>
               <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--muted)" }}>
                 You'll also need <span className="mono">cargo</span> (install Rust via{" "}
@@ -351,6 +354,41 @@ export function Docs() {
                 unless you pass <span className="mono">--force</span> — protects a hand-configured instance from
                 getting its env file silently replaced.
               </div>
+            </Section>
+
+            <Section id="github" title="Deploying from a repo">
+              <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--muted)", margin: "0 0 16px" }}>
+                Besides a plain image, a container can be built and deployed straight from a GitHub repo (public
+                or private) — the agent clones and builds it locally, no registry involved. This is entirely
+                optional and off by default: the control plane needs a GitHub OAuth App connected before any of
+                it works.
+              </p>
+              <ol style={{ fontSize: 14, lineHeight: 1.9, color: "var(--muted)", margin: "0 0 16px", paddingLeft: 20 }}>
+                <li>
+                  Register an OAuth App on GitHub (Settings → Developer settings → OAuth Apps → New OAuth App).
+                  Set <strong>Authorization callback URL</strong> to your control plane's{" "}
+                  <span className="mono">/github/oauth/callback</span>. Uncheck{" "}
+                  <strong>"Expire user access tokens"</strong> — the control plane doesn't implement the refresh
+                  flow yet, so leaving it checked means a connection silently stops working after ~8 hours.
+                </li>
+                <li>
+                  Add four env vars to <span className="mono">/etc/harbory/control-plane.env</span>:{" "}
+                  <span className="mono">GITHUB_CLIENT_ID</span>, <span className="mono">GITHUB_CLIENT_SECRET</span>,{" "}
+                  <span className="mono">GITHUB_REDIRECT_URI</span> (must match the callback URL exactly), and{" "}
+                  <span className="mono">FRONTEND_URL</span> (where the OAuth flow sends the browser back to).
+                </li>
+                <li><span className="mono">sudo systemctl restart harbory-control-plane</span>.</li>
+              </ol>
+              <div className="alert-row alert-row-info">
+                Without these set, <span className="mono">/github/*</span> just returns 503 — the control plane
+                still starts and runs fine either way, this is purely additive.
+              </div>
+              <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "16px 0 0" }}>
+                Nothing agent-side needs configuring — <span className="mono">install-agent.sh</span> already
+                ensures <span className="mono">git</span> is present. A private repo's clone credential is
+                embedded into the URL only in the message the control plane sends to the agent at deploy time —
+                never written to the database or any file on disk beyond that one ephemeral clone.
+              </p>
             </Section>
 
             <Section id="redeploy" title="Redeploying & re-pairing">

@@ -2,6 +2,8 @@ import { useState, type FormEvent } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { supabase, supabaseConfigured } from "../lib/supabase";
 import { useAuth } from "../context/AuthContext";
+import { PasswordInput } from "../components/PasswordInput";
+import { LoadingSpinner } from "../components/LoadingSpinner";
 import "../styles/GameHud.css";
 import "./Login.css";
 
@@ -81,8 +83,7 @@ export function Login() {
           </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12.5, color: "var(--muted)", fontWeight: 600 }}>
             <span>Password</span>
-            <input
-              type="password"
+            <PasswordInput
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -91,6 +92,7 @@ export function Login() {
             />
           </label>
           <button type="submit" className="pixel-btn" style={{ width: "100%", justifyContent: "center" }} disabled={submitting}>
+            {submitting && <LoadingSpinner dotColor="var(--panel)" />}
             {submitting ? "PLEASE WAIT…" : mode === "signin" ? "SIGN IN" : "SIGN UP"}
           </button>
         </form>
