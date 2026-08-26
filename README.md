@@ -1,5 +1,14 @@
 # Harbory
 A distributed control plane and agent system, built entirely in Rust, for lightweight infrastructure orchestration. A central web platform coordinates with small, high-performance agents running on remote VMs, which handle container deployment, service management, and reverse proxy configuration — without the operational weight of Kubernetes.
+
+## Screenshots
+
+|  |  |
+|---|---|
+| ![Landing page](docs/screenshots/landing.png) | ![Dashboard](docs/screenshots/dashboard.png) |
+| ![Deploy tab](docs/screenshots/deploy.png) | ![Agent detail — Containers](docs/screenshots/agent-detail.png) |
+| ![Architecture](docs/screenshots/architecture.png) | ![The robots](docs/screenshots/robots.png) |
+
 ---
 ## 1. Project Goal
 Build a fast, memory-safe, low-overhead orchestration tool that:
