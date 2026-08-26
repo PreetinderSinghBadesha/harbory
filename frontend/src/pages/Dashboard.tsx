@@ -13,6 +13,7 @@ const INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/Preetinder
 
 interface AgentSummary {
   id: string;
+  name: string;
   status: string;
   online: boolean;
   last_heartbeat_at: string | null;
@@ -271,9 +272,9 @@ export function Dashboard() {
                   <Link
                     to={`/agents/${a.id}`}
                     className="mono"
-                    style={{ display: "block", fontSize: 12, fontWeight: 700, margin: "12px 0 8px" }}
+                    style={{ display: "block", fontSize: 12, fontWeight: 700, margin: "12px 0 8px", wordBreak: "break-word" }}
                   >
-                    {a.id.slice(0, 8)}
+                    {a.name}
                   </Link>
                   <HpBar online={a.online} />
                   <div className={a.status === "active" ? "status-tag status-tag-active" : "status-tag status-tag-revoked"}>
@@ -387,7 +388,7 @@ export function Dashboard() {
           <div className="pixel-panel" style={{ width: "100%", maxWidth: 480, padding: "24px 26px", background: "var(--panel)" }}>
             <div className="eyebrow">REVOKE AGENT</div>
             <p className="mono" style={{ fontSize: 12.5, lineHeight: 1.7, margin: "10px 0 20px" }}>
-              Revoke and permanently delete agent {confirmRevokeId.slice(0, 8)}? All of its stored state is removed
+              Revoke and permanently delete agent {agents?.find((a) => a.id === confirmRevokeId)?.name ?? confirmRevokeId.slice(0, 8)}? All of its stored state is removed
               from the database and its connection is cut. This can't be undone.
             </p>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>

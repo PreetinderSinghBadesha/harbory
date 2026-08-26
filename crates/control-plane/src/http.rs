@@ -82,6 +82,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents", get(list_agents))
         .route("/security-events", get(list_security_events))
         .route("/agents/:agent_id/revoke", post(revoke_agent))
+        .route("/agents/:agent_id/name", put(rename_agent))
         .route("/agents/:agent_id", delete(delete_agent_handler))
         .route("/agents/:agent_id/containers", get(list_containers))
         .route("/agents/:agent_id/containers/:name", put(put_container).delete(delete_container))
@@ -204,6 +205,7 @@ async fn list_security_events(
 struct AgentSummaryDto {
     id: Uuid,
     account_id: Uuid,
+    name: String,
     status: String,
     online: bool,
     last_heartbeat_at: Option<DateTime<Utc>>,
@@ -225,12 +227,47 @@ async fn list_agents(
             .map(|a| AgentSummaryDto {
                 id: a.id,
                 account_id: a.account_id,
+                name: a.name,
                 status: a.status,
                 online: a.online,
                 last_heartbeat_at: a.last_heartbeat_at,
             })
             .collect(),
     ))
+}
+
+#[derive(Deserialize)]
+struct RenameAgentRequest {
+    name: String,
+}
+
+/// Renames an agent — purely cosmetic, no effect on pairing/reconciliation.
+/// 400 for an empty or over-long name, 404 if the agent doesn't exist /
+/// isn't yours (same not-found-not-forbidden pattern as the rest of this
+/// file, so ownership isn't leaked through the status code).
+async fn rename_agent(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    Path(agent_id): Path<Uuid>,
+    Json(req): Json<RenameAgentRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > crate::store::MAX_AGENT_NAME_LEN {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let renamed = state.store.rename_agent(agent_id, account.id, name).await.map_err(|err| {
+        tracing::error!(?err, "failed to rename agent");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if renamed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 
 /// Per §3: revoked agents can only rejoin via a brand-new pairing token —

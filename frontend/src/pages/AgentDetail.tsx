@@ -9,6 +9,7 @@ import "../styles/GameHud.css";
 
 interface AgentSummary {
   id: string;
+  name: string;
   status: string;
   online: boolean;
   last_heartbeat_at: string | null;
@@ -582,6 +583,30 @@ export function AgentDetail() {
     },
   });
 
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const renameAgent = useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<void>(`/agents/${agentId}/name`, { method: "PUT", body: JSON.stringify({ name }) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      setEditingName(false);
+    },
+    onError: (error) => {
+      setNotice({ text: `Couldn't rename agent: ${(error as Error).message}`, tone: "error" });
+    },
+  });
+  function startEditingName() {
+    setNameDraft(agent?.name ?? "");
+    setEditingName(true);
+  }
+  function submitRename(e: FormEvent) {
+    e.preventDefault();
+    const trimmed = nameDraft.trim();
+    if (!trimmed) return;
+    renameAgent.mutate(trimmed);
+  }
+
   const containers = useQuery({
     queryKey: ["containers", agentId],
     queryFn: () => apiFetch<ContainersResponse>(`/agents/${agentId}/containers`),
@@ -919,9 +944,45 @@ export function AgentDetail() {
                 </div>
                 <div>
                   <div className="eyebrow" style={{ marginBottom: 6 }}>AGENT</div>
-                  <div className="mono" style={{ fontSize: 24, fontWeight: 700, marginBottom: 10 }}>
-                    {agentId?.slice(0, 8)}
-                  </div>
+                  {editingName ? (
+                    <form onSubmit={submitRename} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <input
+                        className="mono"
+                        style={{ fontSize: 16, fontWeight: 700, width: 200 }}
+                        value={nameDraft}
+                        onChange={(e) => setNameDraft(e.target.value)}
+                        maxLength={40}
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") setEditingName(false);
+                        }}
+                      />
+                      <button type="submit" className="pixel-btn pixel-btn-sm" disabled={renameAgent.isPending || !nameDraft.trim()}>
+                        {renameAgent.isPending && <LoadingSpinner dotColor="var(--panel)" />}
+                        {renameAgent.isPending ? "…" : "SAVE"}
+                      </button>
+                      <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={() => setEditingName(false)}>
+                        CANCEL
+                      </button>
+                    </form>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                      <span className="mono" style={{ fontSize: 24, fontWeight: 700 }}>
+                        {agent?.name ?? agentId?.slice(0, 8)}
+                      </span>
+                      {agent && (
+                        <button
+                          type="button"
+                          className="pixel-btn pixel-btn-ghost pixel-btn-sm"
+                          onClick={startEditingName}
+                          aria-label="Rename agent"
+                          style={{ fontSize: 10, padding: "3px 8px" }}
+                        >
+                          RENAME
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {agent && <HpBar online={agent.online} />}
                   <span className="mono" style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
                     {situation === "revoked"

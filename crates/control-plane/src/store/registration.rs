@@ -104,13 +104,14 @@ impl Store {
         let fp = fingerprint(&public_key);
 
         sqlx::query(
-            "INSERT INTO agents (id, account_id, public_key, public_key_fingerprint)
-             VALUES ($1, $2, $3, $4)",
+            "INSERT INTO agents (id, account_id, public_key, public_key_fingerprint, name)
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(agent_id)
         .bind(row.account_id)
         .bind(public_key.as_slice())
         .bind(fp.as_slice())
+        .bind(crate::names::generate())
         .execute(&mut *tx)
         .await?;
 

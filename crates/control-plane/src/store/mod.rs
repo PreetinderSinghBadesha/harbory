@@ -8,7 +8,7 @@ mod pairing;
 mod proxy;
 mod registration;
 
-pub use agents::AgentRecord;
+pub use agents::{AgentRecord, MAX_AGENT_NAME_LEN};
 pub use audit::{AuditEventRecord, AuditEventType};
 pub use compose::{ComposeStore, DesiredComposeStack, ObservedComposeStack};
 pub use github::{ConsumeStateError, GitHubConnectionRecord, IssuedOAuthState};
