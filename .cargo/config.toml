@@ -4,4 +4,4 @@
 # aarch64 toolchain's own strip instead (installed via
 # binutils-aarch64-linux-gnu in that workflow).
 [target.aarch64-unknown-linux-gnu]
-strip = "aarch64-linux-gnu-strip"
+strip = { path = "aarch64-linux-gnu-strip" }
