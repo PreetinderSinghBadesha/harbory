@@ -10,6 +10,11 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # Manual trigger, so CI changes can be exercised from a branch without
+  # burning/recreating a release tag each iteration. Note a tag push builds
+  # the *tagged* commit — pushing a fix to master does not re-run anything
+  # until the tag is moved.
+  workflow_dispatch:
 
 jobs:
   build:
