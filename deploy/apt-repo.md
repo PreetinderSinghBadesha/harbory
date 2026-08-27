@@ -1,23 +1,27 @@
 # apt repository for harbory-agent
 
 Packages `harbory-agent` as a `.deb` and serves it from a self-hosted apt
-repository at `harbory.preetindersingh.tech/apt/`, so installing it is just:
+repository at `harbory-apt.preetindersingh.tech/apt/`. Every third-party
+apt repo (Docker's, Google Chrome's, this one) needs a one-time bootstrap
+before `apt install` can see it — apt refuses to trust a source it
+hasn't been told about, by design. `add-apt-repo.sh` collapses that into
+one command:
 
 ```bash
-curl -fsSL https://harbory.preetindersingh.tech/apt/harbory-archive-keyring.asc \
-  | sudo gpg --dearmor -o /usr/share/keyrings/harbory-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/harbory-archive-keyring.gpg] \
-  https://harbory.preetindersingh.tech/apt stable main" \
-  | sudo tee /etc/apt/sources.list.d/harbory.list
-sudo apt update
+curl -fsSL https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/add-apt-repo.sh | sudo bash
 sudo apt install harbory-agent
 ```
+
+(equivalent to, and safe to run instead of, the key-add + source-add +
+`apt update` sequence by hand — see the script for exactly what it does.)
 
 This is an *alternative* install path to `deploy/install-agent.sh`'s
 `curl | bash`, not a replacement — both converge on the exact same
 end-state (same service user, same nginx wrapper/sudoers, same env file
-layout), so pick whichever fits your fleet. See "What the package does"
-below.
+layout). The tradeoff: `install-agent.sh` builds from source and needs
+re-running to update; the apt path needs this one-time bootstrap but then
+`apt upgrade harbory-agent` works forever after. Pick whichever fits your
+fleet. See "What the package does" below.
 
 ## 1. Build and verify the `.deb` locally (on a real Linux box — the
    tools here don't exist on this project's Windows dev machine)
@@ -130,12 +134,14 @@ gpg --export-secret-keys --armor "Harbory apt repo" | base64 -w0
 
 Serve `apt-repo/dists/`, `apt-repo/pool/`, and
 `apt-repo/harbory-archive-keyring.asc` as static files under
-`harbory.preetindersingh.tech/apt/` — e.g. an nginx server block:
+`harbory-apt.preetindersingh.tech/apt/` — a dedicated subdomain, not the
+main frontend's domain, so it needs its own DNS record and Certbot cert
+first (`sudo certbot --nginx -d harbory-apt.preetindersingh.tech`):
 
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name harbory.preetindersingh.tech;
+    server_name harbory-apt.preetindersingh.tech;
 
     location /apt/ {
         alias /var/www/harbory/apt/;
@@ -198,25 +204,39 @@ base64 -w0 ~/harbory-apt-deploy-key   # -> APT_DEPLOY_SSH_KEY
 
 `.github/workflows/release-deb.yml` builds both architectures on a
 pushed `vX.Y.Z` tag, `reprepro includedeb`s them, exports the public key,
-and `rsync`s the result to the server over SSH. Repo secrets it expects:
+and `rsync`s the result to the server over SSH. These are **environment
+secrets** scoped to a `harbory` environment (Settings → Environments),
+not plain repo secrets — the `publish` job must declare
+`environment: harbory` or they silently resolve to empty strings instead
+of failing loudly:
 
 | Secret | What |
 |---|---|
 | `APT_GPG_PRIVATE_KEY` | `base64 -w0` of the exported private key (step 3) |
-| `APT_DEPLOY_SSH_KEY` | Private key for an account with write access to the server's apt directory |
-| `APT_DEPLOY_HOST` | e.g. `harbory.preetindersingh.tech` |
-| `APT_DEPLOY_USER` | SSH user on that host |
+| `APT_DEPLOY_SSH_KEY` | `base64 -w0` of the restricted deploy key (step 4b) — a raw pasted PEM picks up CRLF/newline damage and OpenSSH rejects it with `error in libcrypto` |
+| `APT_DEPLOY_HOST` | e.g. `harbory-apt.preetindersingh.tech` |
+| `APT_DEPLOY_USER` | `harbory-apt-deploy` |
 | `APT_DEPLOY_PATH` | Absolute path served as `/apt/` (e.g. `/var/www/harbory/apt`) |
 
-Cutting a release is then just: `git tag v0.2.0 && git push origin v0.2.0`.
+Cutting a release is then just: `git tag v0.2.0 && git push origin v0.2.0`
+(or re-run via `workflow_dispatch` from the Actions tab, which doesn't
+need a tag move — useful while iterating on the workflow itself).
 
 ## 6. Installing on a target VM
 
 ```bash
-curl -fsSL https://harbory.preetindersingh.tech/apt/harbory-archive-keyring.asc \
+curl -fsSL https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/add-apt-repo.sh | sudo bash
+sudo apt install harbory-agent
+sudo harbory-agent-pair <pairing-token>
+```
+
+Or by hand, equivalent to what that script does:
+
+```bash
+curl -fsSL https://harbory-apt.preetindersingh.tech/apt/harbory-archive-keyring.asc \
   | sudo gpg --dearmor -o /usr/share/keyrings/harbory-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/harbory-archive-keyring.gpg] \
-  https://harbory.preetindersingh.tech/apt stable main" \
+  https://harbory-apt.preetindersingh.tech/apt stable main" \
   | sudo tee /etc/apt/sources.list.d/harbory.list
 sudo apt update
 sudo apt install harbory-agent

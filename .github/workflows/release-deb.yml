@@ -3,7 +3,7 @@ name: Build & publish harbory-agent .deb
 # Fires on a version tag (v1.2.3) — builds amd64 + arm64 .debs, signs and
 # publishes them into the reprepro-managed apt repo, then syncs the repo's
 # dists/+pool/ output to the server that serves
-# harbory.preetindersingh.tech/apt/. See deploy/apt-repo.md for the full
+# harbory-apt.preetindersingh.tech/apt/. See deploy/apt-repo.md for the full
 # setup this workflow assumes already exists (GPG key + secrets, target
 # server directory).
 on:
