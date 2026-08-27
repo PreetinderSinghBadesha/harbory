@@ -44,6 +44,14 @@ jobs:
         if: matrix.use_cross
         run: cargo install cross --locked
 
+      - name: Install aarch64 binutils (arm64 only)
+        if: matrix.use_cross
+        # cargo-deb strips the binary using the host's own `strip` by
+        # default, which can't read a cross-compiled aarch64 ELF — see
+        # .cargo/config.toml, which points it at aarch64-linux-gnu-strip
+        # from this package instead.
+        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
+
       - name: Build release binary (native, amd64)
         if: ${{ !matrix.use_cross }}
         run: cargo build --release -p harbory-agent --target ${{ matrix.target }}
