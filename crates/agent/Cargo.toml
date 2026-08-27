@@ -46,7 +46,12 @@ Not started automatically on install: run `sudo harbory-agent-pair \
 section = "admin"
 priority = "optional"
 depends = "nginx, git, adduser, systemd"
-recommends = "docker.io | docker-ce"
+# The compose plugin is a separate package from the daemon on Debian/
+# Ubuntu (docker.io does not bundle it) — without it, `docker compose` as
+# a subcommand doesn't exist and ComposeManager's periodic `docker compose
+# ls` fails every cycle. Confirmed live: a fresh install with only
+# docker.io logged exactly that error.
+recommends = "docker.io | docker-ce, docker-compose-v2 | docker-compose-plugin"
 maintainer-scripts = "../../deploy/debian"
 conf-files = ["/etc/harbory/agent.env"]
 assets = [

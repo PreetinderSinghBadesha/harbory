@@ -368,7 +368,21 @@ impl ComposeManager {
             .await?;
 
         if !output.status.success() {
-            tracing::error!("failed to run docker compose ls");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Docker's own message when the compose plugin isn't installed
+            // (docker.io does not bundle it — only the daemon/CLI) — give
+            // the exact fix instead of a bare failure, since this is a
+            // common gap on a fresh install and otherwise looks like a
+            // mysterious per-heartbeat error with no obvious next step.
+            if stderr.contains("is not a docker command") || stderr.contains("unknown command \"compose\"") {
+                tracing::error!(
+                    "docker compose ls failed: the Docker Compose plugin isn't installed. \
+                     Fix: sudo apt install docker-compose-v2 (or docker-compose-plugin on \
+                     hosts using Docker's own apt repo), then restart harbory-agent."
+                );
+            } else {
+                tracing::error!(%stderr, "failed to run docker compose ls");
+            }
             return Ok(vec![]);
         }
 
