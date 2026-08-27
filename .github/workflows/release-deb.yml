@@ -137,7 +137,11 @@ jobs:
           ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null \
             || { echo "::error::deploy key is not a valid private key after decoding" >&2; exit 1; }
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-          rsync -avz --delete \
+          # -rltpvz rather than -a: -a implies -D (devices/specials) and
+          # -go (owner/group), all meaningless for a static file repo and
+          # unusable as a non-root user anyway. Avoiding -D also keeps the
+          # remote side from having to negotiate it away.
+          rsync -rltpvz --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
             apt-repo/dists apt-repo/pool apt-repo/harbory-archive-keyring.asc \
             "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"

@@ -144,6 +144,56 @@ server {
 }
 ```
 
+## 4b. The restricted deploy key
+
+CI needs to write into the apt directory and nothing else, so it gets its
+own key rather than the server's admin key:
+
+```bash
+# On the server
+sudo useradd -m -s /bin/bash harbory-apt-deploy
+sudo mkdir -p /var/www/harbory/apt
+sudo chown -R harbory-apt-deploy:harbory-apt-deploy /var/www/harbory/apt
+
+sudo tee /usr/local/bin/harbory-apt-rsync >/dev/null <<'EOF'
+#!/bin/sh
+case "$SSH_ORIGINAL_COMMAND" in
+  "rsync --server "*) exec $SSH_ORIGINAL_COMMAND ;;
+  *) echo "rejected: this key may only run rsync" >&2; exit 1 ;;
+esac
+EOF
+sudo chmod 755 /usr/local/bin/harbory-apt-rsync
+```
+
+Then in `/home/harbory-apt-deploy/.ssh/authorized_keys`, prefix the
+public key with:
+
+```
+command="/usr/local/bin/harbory-apt-rsync",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding ssh-ed25519 AAAA...
+```
+
+Two independent restrictions, deliberately: the `command=` wrapper means
+the key can only ever run rsync — no shell, no arbitrary commands — and
+filesystem ownership means rsync can only write into the apt directory
+whatever paths it is handed.
+
+**Why not `rrsync`?** It's the conventional choice and it does enforce
+path containment itself, but it is tightly coupled to the rsync version
+it shipped with: an rrsync from a newer branch passes options (e.g.
+`--drop-D`) that an older server-side rsync rejects outright, and the
+error surfaces as an opaque protocol failure. With three rsync versions
+in play (CI runner, server, and any local machine testing a deploy),
+keeping them aligned is ongoing work for a guarantee filesystem
+ownership already provides here.
+
+**Store the private key base64-encoded** in the GitHub secret. A raw PEM
+pasted through the web UI picks up CRLF line endings or loses its
+trailing newline, and OpenSSH then rejects it with `error in libcrypto`:
+
+```bash
+base64 -w0 ~/harbory-apt-deploy-key   # -> APT_DEPLOY_SSH_KEY
+```
+
 ## 5. Automate via GitHub Actions
 
 `.github/workflows/release-deb.yml` builds both architectures on a
