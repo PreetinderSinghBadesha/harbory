@@ -122,9 +122,20 @@ jobs:
           DEPLOY_USER: ${{ secrets.APT_DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.APT_DEPLOY_PATH }} # e.g. /var/www/harbory/apt
         run: |
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "::error::APT_DEPLOY_SSH_KEY is empty — check this job declares 'environment: harbory'." >&2
+            exit 1
+          fi
           mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          # The secret holds the key base64-encoded, same as the GPG one.
+          # A raw PEM pasted through the web UI picks up CRLF line endings
+          # (it is generated on Windows) or loses its trailing newline,
+          # either of which makes OpenSSH reject it with the singularly
+          # unhelpful "error in libcrypto". base64 survives the round trip.
+          echo "$SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null \
+            || { echo "::error::deploy key is not a valid private key after decoding" >&2; exit 1; }
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
           rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
