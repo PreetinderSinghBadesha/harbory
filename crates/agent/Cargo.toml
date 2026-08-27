@@ -2,6 +2,8 @@
 name = "harbory-agent"
 edition.workspace = true
 version.workspace = true
+description = "Harbory agent — pairs a VM to a Harbory control plane and manages its containers, Compose stacks, and Nginx reverse proxy"
+license = "MIT"
 
 [dependencies]
 harbory-protocol = { path = "../protocol" }
@@ -22,3 +24,33 @@ thiserror = { workspace = true }
 bollard = "0.17"
 tempfile = "3.27.0"
 serde_json.workspace = true
+
+# Packaging (`cargo deb -p harbory-agent`, run from the workspace root or
+# this crate's directory). All the setup logic install-agent.sh performs
+# by hand — service user, docker group, nginx wrapper/sudoers, env file —
+# lives in deploy/debian/postinst instead here, so the two install paths
+# (curl|bash and apt) converge on the exact same end state. See
+# deploy/apt-repo.md for the full packaging/repo story.
+[package.metadata.deb]
+maintainer = "Preetinder Singh Badesha <preetindersingh13per@gmail.com>"
+copyright = "2026, Preetinder Singh Badesha"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+Harbory agent connects a VM to a Harbory control plane over an \
+authenticated gRPC stream, then deploys and manages Docker containers \
+and Compose stacks and maintains this host's Nginx reverse-proxy \
+configuration — all driven from the Harbory dashboard.
+.
+Not started automatically on install: run `sudo harbory-agent-pair \
+<pairing-token>` once you have a token from the dashboard."""
+section = "admin"
+priority = "optional"
+depends = "nginx, git, adduser, systemd"
+recommends = "docker.io | docker-ce"
+maintainer-scripts = "../../deploy/debian"
+conf-files = ["/etc/harbory/agent.env"]
+assets = [
+    ["target/release/harbory-agent", "usr/bin/harbory-agent", "755"],
+    ["../../deploy/debian/harbory-agent-pair", "usr/bin/harbory-agent-pair", "755"],
+    ["../../deploy/debian/harbory-agent.service", "lib/systemd/system/harbory-agent.service", "644"],
+]

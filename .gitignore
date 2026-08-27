@@ -6,3 +6,16 @@
 agent-key
 agent-credential
 control-plane-signing-key
+
+# apt repo: reprepro's generated state (dists/, pool/, db/, lists/) and any
+# GPG key material live only on the hosting server / CI runner — only
+# apt-repo/conf/* (the repo definition) is source-controlled. See
+# deploy/apt-repo.md.
+apt-repo/dists/
+apt-repo/pool/
+apt-repo/db/
+apt-repo/lists/
+# Private key material only — a public keyring meant for distribution
+# (e.g. deploy/harbory-archive-keyring.asc) is fine to commit.
+secring.gpg
+*.private.gpg

@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+
+ENV_FILE="/etc/harbory/agent.env"
+NGINX_CONF="/etc/nginx/conf.d/harbory.conf"
+NGINX_WRAPPER="/usr/local/bin/harbory-nginx-ctl"
+SUDOERS_FILE="/etc/sudoers.d/harbory-agent-nginx"
+
+case "$1" in
+  purge)
+    # Deliberately NOT removing /var/lib/harbory-agent or the harbory-agent
+    # system user/docker-group membership here — that directory holds the
+    # agent's Ed25519 identity and control-plane credential. Auto-deleting
+    # it on purge would silently orphan a live, paired agent an operator
+    # didn't mean to fully decommission. Remove it by hand if that's
+    # really what you want:
+    #   sudo rm -rf /var/lib/harbory-agent && sudo deluser harbory-agent
+    rm -f "$ENV_FILE" "$SUDOERS_FILE" "$NGINX_WRAPPER" "$NGINX_CONF"
+    rmdir /etc/harbory 2>/dev/null || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    ;;
+  remove)
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    ;;
+esac
+
+exit 0

@@ -1,0 +1,15 @@
+#!/bin/sh
+# Stop the service before dpkg removes the binary/unit file — otherwise a
+# running process can be left pointing at files that no longer exist.
+set -e
+
+case "$1" in
+  remove|deconfigure)
+    if [ -d /run/systemd/system ]; then
+      systemctl stop harbory-agent.service >/dev/null 2>&1 || true
+      systemctl disable harbory-agent.service >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+
+exit 0

@@ -1,0 +1,6 @@
+# Shell scripts and Debian maintainer scripts must keep LF endings no
+# matter what checks them out — a CRLF shebang line breaks under /bin/sh
+# on Linux (this is a Windows-developed repo, so this isn't hypothetical).
+*.sh text eol=lf
+deploy/debian/* text eol=lf
+deploy/debian/harbory-agent.service text eol=lf

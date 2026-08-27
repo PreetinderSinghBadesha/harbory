@@ -1,0 +1,27 @@
+[Unit]
+Description=Harbory agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=harbory-agent
+Group=harbory-agent
+WorkingDirectory=/var/lib/harbory-agent
+EnvironmentFile=/etc/harbory/agent.env
+# Pre-flight: the binary itself already fails fast if Docker isn't
+# reachable (container management is its whole job), but that shows up as
+# a Rust panic buried in the journal after a process actually started.
+# This fails at the same point, before that, so 'systemctl status' shows
+# Docker's own error directly instead — and runs as the same user as
+# ExecStart, so it's testing the exact access path the real process uses.
+ExecStartPre=/usr/bin/docker info
+ExecStart=/usr/bin/harbory-agent
+Restart=always
+RestartSec=2
+# NoNewPrivileges must stay off (systemd's default) — the nginx reload
+# wrapper needs to exec sudo, which needs the setuid escalation this would
+# block.
+
+[Install]
+WantedBy=multi-user.target

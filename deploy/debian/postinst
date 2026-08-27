@@ -1,0 +1,99 @@
+#!/bin/sh
+# Mirrors install-agent.sh's system-setup steps (service user, docker
+# group, nginx wrapper + scoped sudoers, env file) so a `.deb` install and
+# a `curl | bash` install converge on the exact same end state. Deliberately
+# does NOT start or enable the service — pairing needs a token the operator
+# may not have yet; see deploy/debian/harbory-agent-pair.
+set -e
+
+SERVICE_USER="harbory-agent"
+DATA_DIR="/var/lib/harbory-agent"
+ENV_FILE="/etc/harbory/agent.env"
+NGINX_CONF="/etc/nginx/conf.d/harbory.conf"
+NGINX_WRAPPER="/usr/local/bin/harbory-nginx-ctl"
+SUDOERS_FILE="/etc/sudoers.d/harbory-agent-nginx"
+CONTROL_PLANE_ADDR_DEFAULT="https://harbory-client.preetindersingh.tech"
+
+case "$1" in
+  configure)
+    if ! getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
+      adduser --system --home "$DATA_DIR" --shell /usr/sbin/nologin --group "$SERVICE_USER"
+    fi
+
+    if getent group docker >/dev/null 2>&1; then
+      usermod -aG docker "$SERVICE_USER" || true
+    else
+      echo "harbory-agent: 'docker' group not found — install Docker, then run:" >&2
+      echo "  sudo usermod -aG docker $SERVICE_USER && sudo systemctl restart harbory-agent" >&2
+    fi
+
+    mkdir -p "$DATA_DIR"
+    chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
+    chmod 700 "$DATA_DIR"
+
+    mkdir -p /etc/harbory
+    if [ ! -f "$ENV_FILE" ]; then
+      cat > "$ENV_FILE" <<EOF
+CONTROL_PLANE_ADDR=$CONTROL_PLANE_ADDR_DEFAULT
+AGENT_KEY_PATH=$DATA_DIR/agent-key
+AGENT_CREDENTIAL_PATH=$DATA_DIR/agent-credential
+EOF
+    fi
+    chown root:root "$ENV_FILE"
+    chmod 640 "$ENV_FILE"
+
+    if command -v nginx >/dev/null 2>&1; then
+      mkdir -p "$(dirname "$NGINX_CONF")"
+      if [ ! -f "$NGINX_CONF" ]; then
+        echo "# Managed by Harbory — do not edit directly, changes will be overwritten." > "$NGINX_CONF"
+      fi
+      chown "$SERVICE_USER:$SERVICE_USER" "$NGINX_CONF"
+      chmod 644 "$NGINX_CONF"
+
+      NGINX_BIN="$(command -v nginx)"
+      cat > "$NGINX_WRAPPER" <<EOF
+#!/bin/sh
+# Lets $SERVICE_USER run exactly two nginx invocations as root, via the
+# sudoers rule in $SUDOERS_FILE.
+exec sudo -n "$NGINX_BIN" "\$@"
+EOF
+      chmod 755 "$NGINX_WRAPPER"
+
+      SUDOERS_CONTENT="$SERVICE_USER ALL=(root) NOPASSWD: $NGINX_BIN -t, $NGINX_BIN -s reload"
+      TMP_SUDOERS="$(mktemp)"
+      echo "$SUDOERS_CONTENT" > "$TMP_SUDOERS"
+      if visudo -c -f "$TMP_SUDOERS" >/dev/null 2>&1; then
+        install -o root -g root -m 440 "$TMP_SUDOERS" "$SUDOERS_FILE"
+        rm -f "$TMP_SUDOERS"
+        # Idempotent set, not append-if-missing — see install-agent.sh's
+        # comment on the same line for why.
+        sed -i '/^NGINX_BINARY_PATH=/d' "$ENV_FILE"
+        echo "NGINX_BINARY_PATH=$NGINX_WRAPPER" >> "$ENV_FILE"
+
+        echo "harbory-agent: verifying $SERVICE_USER can reach nginx through the wrapper..."
+        if su -s /bin/sh -c "$NGINX_WRAPPER -t" "$SERVICE_USER" >/tmp/harbory-nginx-selftest.log 2>&1; then
+          echo "harbory-agent: OK — $SERVICE_USER -> $NGINX_WRAPPER -> nginx -t works."
+        else
+          echo "harbory-agent: FAILED — $SERVICE_USER could not run nginx -t through $NGINX_WRAPPER:" >&2
+          cat /tmp/harbory-nginx-selftest.log >&2
+          echo "harbory-agent: proxy-route deploys will fail until this is fixed — check $SUDOERS_FILE and $NGINX_WRAPPER." >&2
+        fi
+        rm -f /tmp/harbory-nginx-selftest.log
+      else
+        rm -f "$TMP_SUDOERS"
+        echo "harbory-agent: generated sudoers rule failed validation — skipping nginx reload permission setup" >&2
+      fi
+    else
+      echo "harbory-agent: nginx not found — skipping proxy-route permission setup" >&2
+    fi
+
+    systemctl daemon-reload || true
+
+    echo ""
+    echo "harbory-agent installed but not started — get a pairing token from the"
+    echo "dashboard, then run:"
+    echo "  sudo harbory-agent-pair <pairing-token>"
+    ;;
+esac
+
+exit 0

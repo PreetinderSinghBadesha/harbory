@@ -1,7 +1,9 @@
 # Deployment
 
 Installer scripts, one set per binary. All are safe to re-run and print
-what they're doing at every step.
+what they're doing at every step. `harbory-agent` can also be installed
+via `apt` from a self-hosted repository instead of `curl | bash` — see
+[apt-repo.md](apt-repo.md).
 
 ```bash
 # On a control-plane host:

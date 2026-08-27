@@ -1,0 +1,113 @@
+name: Build & publish harbory-agent .deb
+
+# Fires on a version tag (v1.2.3) — builds amd64 + arm64 .debs, signs and
+# publishes them into the reprepro-managed apt repo, then syncs the repo's
+# dists/+pool/ output to the server that serves
+# harbory.preetindersingh.tech/apt/. See deploy/apt-repo.md for the full
+# setup this workflow assumes already exists (GPG key + secrets, target
+# server directory).
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            use_cross: false
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            use_cross: true
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Install cross (arm64 only)
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      - name: Build release binary (native, amd64)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release -p harbory-agent --target ${{ matrix.target }}
+
+      - name: Build release binary (cross, arm64)
+        if: matrix.use_cross
+        run: cross build --release -p harbory-agent --target ${{ matrix.target }}
+
+      - name: Build .deb
+        run: cargo deb -p harbory-agent --target ${{ matrix.target }} --no-build
+        # `--no-build` because the binary was already cross-compiled above
+        # (cargo-deb's own build step doesn't know about `cross`).
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: harbory-agent-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/debian/*.deb
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all .deb artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Install reprepro
+        run: sudo apt-get update && sudo apt-get install -y reprepro
+
+      - name: Import signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          mkdir -m 700 -p "$HOME/.gnupg"
+          echo "$APT_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
+          # See deploy/apt-repo.md for why this key is deliberately
+          # passphrase-less (dedicated apt-signing key, not a personal one).
+
+      - name: Include .debs into the repo
+        run: |
+          for deb in artifacts/*/*.deb; do
+            reprepro -b apt-repo includedeb stable "$deb"
+          done
+
+      - name: Export public key for distribution
+        run: |
+          gpg --armor --export --output apt-repo/harbory-archive-keyring.asc
+
+      - name: Sync repo to server
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.APT_DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.APT_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.APT_DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.APT_DEPLOY_PATH }} # e.g. /var/www/harbory/apt
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            apt-repo/dists apt-repo/pool apt-repo/harbory-archive-keyring.asc \
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"

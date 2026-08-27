@@ -1,0 +1,177 @@
+# apt repository for harbory-agent
+
+Packages `harbory-agent` as a `.deb` and serves it from a self-hosted apt
+repository at `harbory.preetindersingh.tech/apt/`, so installing it is just:
+
+```bash
+curl -fsSL https://harbory.preetindersingh.tech/apt/harbory-archive-keyring.asc \
+  | sudo gpg --dearmor -o /usr/share/keyrings/harbory-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/harbory-archive-keyring.gpg] \
+  https://harbory.preetindersingh.tech/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/harbory.list
+sudo apt update
+sudo apt install harbory-agent
+```
+
+This is an *alternative* install path to `deploy/install-agent.sh`'s
+`curl | bash`, not a replacement — both converge on the exact same
+end-state (same service user, same nginx wrapper/sudoers, same env file
+layout), so pick whichever fits your fleet. See "What the package does"
+below.
+
+## 1. Build and verify the `.deb` locally (on a real Linux box — the
+   tools here don't exist on this project's Windows dev machine)
+
+```bash
+cargo install cargo-deb --locked
+cargo build --release -p harbory-agent
+cargo deb -p harbory-agent --no-build
+# -> target/debian/harbory-agent_<version>_<arch>.deb
+
+# Inspect before installing:
+dpkg-deb --info target/debian/harbory-agent_*.deb
+dpkg-deb --contents target/debian/harbory-agent_*.deb
+
+# Real install/uninstall smoke test, ideally in a disposable VM/container:
+sudo dpkg -i target/debian/harbory-agent_*.deb
+systemctl status harbory-agent.service   # inactive, not-started — expected
+id harbory-agent                         # service user exists
+cat /etc/harbory/agent.env               # env file was written
+sudo harbory-agent-pair <pairing-token>  # now actually pair it
+sudo apt remove harbory-agent            # binary/unit gone, config kept
+sudo apt purge harbory-agent             # config gone too; data dir/user kept — see postrm's comment
+```
+
+`[package.metadata.deb]` in `crates/agent/Cargo.toml` defines the package
+metadata and file layout; `deploy/debian/{postinst,prerm,postrm}` replicate
+`install-agent.sh`'s setup logic (service user, docker group, nginx
+wrapper + scoped sudoers rule, env file) as Debian maintainer scripts —
+read `install-agent.sh`'s own comments first if you're changing either,
+since they're meant to stay in lockstep.
+
+### What the package does — and deliberately doesn't do
+
+- Installs the binary, a `harbory-agent-pair` helper, and the systemd
+  unit; creates the `harbory-agent` system user and its data directory;
+  writes `/etc/harbory/agent.env`; sets up the nginx reverse-proxy
+  permission chain (wrapper script + scoped `sudoers.d` rule) if nginx is
+  present. All idempotent, same as the shell installer.
+- Does **not** start or enable the service — pairing needs a token from
+  the dashboard you may not have yet. Pair (and re-pair) with
+  `sudo harbory-agent-pair <pairing-token>`, same as the shell-installed
+  version.
+- Does **not** hard-`Depends` on a Docker package — Docker's package name
+  varies too much across install methods (`docker.io`, `docker-ce` from
+  Docker's own repo, snap, a manual binary) to safely express as a single
+  apt dependency. It's a `Recommends`, and the agent itself already fails
+  fast with a clear error if the daemon isn't reachable.
+- `apt remove` stops the service and removes the binary/unit but leaves
+  `/etc/harbory/agent.env` (it's declared a `conf-file`, apt's normal
+  behavior). `apt purge` removes that plus the generated nginx/sudoers
+  files — but **not** `/var/lib/harbory-agent` or the `harbory-agent`
+  user, since that directory holds the agent's private key and
+  control-plane credential; auto-deleting it on purge could silently
+  orphan a live paired agent. Remove it by hand if that's genuinely what
+  you want (`postrm`'s comment has the exact command).
+
+## 2. Set up the repository (reprepro)
+
+`apt-repo/conf/distributions` and `apt-repo/conf/options` are checked into
+this repo — they're the *definition* of the repo, not its generated
+output. `dists/`, `pool/`, and reprepro's `db/`/`lists/` state directories
+are gitignored and only ever exist on whatever host actually serves the
+repo (or transiently in CI before syncing).
+
+```bash
+sudo apt install reprepro gnupg
+
+cd apt-repo
+reprepro includedeb stable /path/to/harbory-agent_<version>_amd64.deb
+reprepro includedeb stable /path/to/harbory-agent_<version>_arm64.deb
+# -> populates apt-repo/dists/ and apt-repo/pool/
+```
+
+## 3. Generate the signing key
+
+A **dedicated** key for this repo, not a personal one — and
+deliberately **passphrase-less**, since `reprepro` runs unattended in CI
+with nothing to type a passphrase into. This is the standard tradeoff for
+an automated package repo (Launchpad PPAs and most distro CI signing keys
+work the same way): the key's confidentiality rests entirely on GitHub
+Secrets and the server's file permissions, not on a passphrase. If that
+tradeoff doesn't sit right for your threat model, sign manually on your
+own machine instead of via the GitHub Actions workflow.
+
+```bash
+gpg --batch --pinentry-mode loopback --passphrase '' --quick-generate-key \
+  "Harbory apt repo <preetindersingh13per@gmail.com>" ed25519 sign never
+
+# Find its fingerprint:
+gpg --list-secret-keys --keyid-format long
+
+# Point reprepro at it explicitly (recommended over conf/distributions'
+# default `SignWith: yes`, which just picks "the only secret key" and
+# breaks silently if your gnupg homedir ever has more than one):
+#   SignWith: <fingerprint>
+
+# Export the public key for distribution — this is what end users import:
+gpg --armor --export "Harbory apt repo" > apt-repo/harbory-archive-keyring.asc
+```
+
+Keep the private key **out of git** — export it once for the GitHub
+Actions secret below, then treat your local copy as sensitive:
+
+```bash
+gpg --export-secret-keys --armor "Harbory apt repo" | base64 -w0
+# -> paste as the APT_GPG_PRIVATE_KEY repo secret
+```
+
+## 4. Host it
+
+Serve `apt-repo/dists/`, `apt-repo/pool/`, and
+`apt-repo/harbory-archive-keyring.asc` as static files under
+`harbory.preetindersingh.tech/apt/` — e.g. an nginx server block:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name harbory.preetindersingh.tech;
+
+    location /apt/ {
+        alias /var/www/harbory/apt/;
+        autoindex off;
+    }
+}
+```
+
+## 5. Automate via GitHub Actions
+
+`.github/workflows/release-deb.yml` builds both architectures on a
+pushed `vX.Y.Z` tag, `reprepro includedeb`s them, exports the public key,
+and `rsync`s the result to the server over SSH. Repo secrets it expects:
+
+| Secret | What |
+|---|---|
+| `APT_GPG_PRIVATE_KEY` | `base64 -w0` of the exported private key (step 3) |
+| `APT_DEPLOY_SSH_KEY` | Private key for an account with write access to the server's apt directory |
+| `APT_DEPLOY_HOST` | e.g. `harbory.preetindersingh.tech` |
+| `APT_DEPLOY_USER` | SSH user on that host |
+| `APT_DEPLOY_PATH` | Absolute path served as `/apt/` (e.g. `/var/www/harbory/apt`) |
+
+Cutting a release is then just: `git tag v0.2.0 && git push origin v0.2.0`.
+
+## 6. Installing on a target VM
+
+```bash
+curl -fsSL https://harbory.preetindersingh.tech/apt/harbory-archive-keyring.asc \
+  | sudo gpg --dearmor -o /usr/share/keyrings/harbory-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/harbory-archive-keyring.gpg] \
+  https://harbory.preetindersingh.tech/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/harbory.list
+sudo apt update
+sudo apt install harbory-agent
+sudo harbory-agent-pair <pairing-token>
+```
+
+Upgrades are then just `sudo apt update && sudo apt upgrade harbory-agent`
+— no re-pairing needed, same as restarting the shell-installed binary.

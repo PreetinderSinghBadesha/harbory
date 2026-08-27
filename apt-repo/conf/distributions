@@ -1,0 +1,7 @@
+Origin: Harbory
+Label: Harbory
+Codename: stable
+Architectures: amd64 arm64
+Components: main
+Description: Harbory agent apt repository
+SignWith: 257E0ADD08DE9DDE170CAE25E893FE8771735CF8
