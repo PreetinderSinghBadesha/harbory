@@ -66,6 +66,11 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # The signing/deploy secrets are *environment* secrets, not repository
+    # secrets — without this line they silently resolve to empty strings
+    # rather than failing loudly (gpg then reports "no valid OpenPGP data
+    # found", which looks like a corrupt key rather than a missing one).
+    environment: harbory
     steps:
       - uses: actions/checkout@v4
 
@@ -81,6 +86,13 @@ jobs:
         env:
           APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
         run: |
+          # Fail loudly on a missing secret. An unset secret expands to an
+          # empty string, which gpg reports as "no valid OpenPGP data
+          # found" — indistinguishable from a genuinely corrupt key.
+          if [ -z "$APT_GPG_PRIVATE_KEY" ]; then
+            echo "::error::APT_GPG_PRIVATE_KEY is empty. It is an environment secret — check this job declares 'environment: harbory'." >&2
+            exit 1
+          fi
           mkdir -m 700 -p "$HOME/.gnupg"
           echo "$APT_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
           # See deploy/apt-repo.md for why this key is deliberately
