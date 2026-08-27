@@ -11,9 +11,7 @@ import "../styles/GameHud.css";
 import "./Landing.css";
 
 const GITHUB_URL = "https://github.com/PreetinderSinghBadesha/harbory";
-const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-agent.sh";
 const ADD_APT_REPO_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/add-apt-repo.sh";
-const SOURCE_INSTALL_COMMAND = `curl -fsSL ${INSTALL_SCRIPT_URL} | bash`;
 // The default, primary install path — a single copyable command that
 // registers the repo and installs the package in one go (apt upgrade
 // tracks future releases afterward; the source-build path needs
