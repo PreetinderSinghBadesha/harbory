@@ -243,5 +243,79 @@ sudo apt install harbory-agent
 sudo harbory-agent-pair <pairing-token>
 ```
 
+## Troubleshooting
+
+Everything below actually happened while building this pipeline, in
+order — kept as a real record rather than a hypothetical FAQ. For
+end-user install issues (not repo/CI maintenance), see the in-app
+[Docs page](https://harbory-client.preetindersingh.tech/docs#troubleshooting)'s
+troubleshooting section instead — it's a shorter, user-facing subset.
+
+**`strip: Unable to recognise the format of the input file`** — `cargo
+deb` stripped the aarch64 binary with the host's own (x86_64) `strip`.
+Fix: `.cargo/config.toml`'s `[target.aarch64-unknown-linux-gnu]` needs
+`strip = { path = "aarch64-linux-gnu-strip" }` — **as an inline table**,
+not a plain string (`strip = "aarch64-linux-gnu-strip"` fails with
+`expected a table, but found a string`, and this is enforced by Cargo
+itself, not just `cargo-deb`). Install `binutils-aarch64-linux-gnu` on
+the runner for that binary to exist.
+
+**A CI fix seems to have no effect, run after run** — the workflow
+triggers on `push: tags`, not `push: branches`. Pushing a fix to
+`master` does not re-run anything; the tag still points at the old
+commit and CI keeps rebuilding *that*. Move the tag:
+```bash
+git tag -d v0.1.0 && git push origin :refs/tags/v0.1.0
+git tag v0.1.0 && git push origin v0.1.0
+```
+Or use `workflow_dispatch` (already enabled in this workflow) to iterate
+without touching tags at all.
+
+**`[cross] note: Falling back to cargo on the host`** — the `cross` tool
+silently stopped cross-compiling and just built for the host
+architecture instead, which then fails differently downstream. This repo
+no longer uses `cross` at all — native `gcc-aarch64-linux-gnu` instead,
+see the workflow.
+
+**`gpg: no valid OpenPGP data found`** despite a verified-correct base64
+secret — the signing/deploy secrets are **environment secrets** (scoped
+to the `harbory` environment), not repo secrets. A job that doesn't
+declare `environment: harbory` sees them as empty strings, and gpg
+reports that as "no valid data" rather than "no data at all". Same root
+cause produces `Permission denied (publickey)` for the SSH step.
+
+**`gpg: cannot open '/dev/tty'`** on the key-export step — `gpg --output`
+prompts to overwrite when the target file already exists (it's committed
+to the repo), and there's no TTY on a runner to answer. `--batch --yes`.
+
+**`error in libcrypto`** loading the SSH deploy key — a raw PEM pasted
+through GitHub's secret web UI picks up CRLF line endings (the key was
+generated on Windows) or loses its trailing newline, and OpenSSH's error
+for that is this deeply unhelpful message. Store the key base64-encoded
+instead (`base64 -w0 keyfile`), same as the GPG key — a round trip
+through base64 can't be corrupted by whitespace handling.
+
+**`rsync: on remote machine: --drop-D: unknown option`** — `rrsync`
+(fetched from the rsync project's `master` branch) emitted a flag the
+server's actual rsync (an older/different release) didn't recognize.
+Coupling a restriction wrapper to a specific rsync version across three
+different machines (CI runner, server, any local test) is a losing
+game — see §4b above for the version-agnostic wrapper this repo uses
+instead, and drop `-a` (which implies `-D`) from the rsync invocation.
+
+**A curl to the apt URL returns 200 but it's the frontend's HTML**, not a
+real `Release`/`Packages` file — nginx has no `location /apt/` route for
+that domain and is falling through to the SPA's catch-all, which returns
+200 for any path. Confirm with `curl -s -D - <url> | grep -i
+content-type` — `text/html` means it's the SPA, not the repo. Add the
+`location /apt/ { alias ...; }` block (§4) to the right `server{}` block,
+not the default/catch-all one.
+
+**A pasted multi-line command block errors on the `|` line** — a `\`
+line continuation only escapes exactly the next newline; a blank line in
+between (common when a terminal reflows a paste) breaks the join and the
+pipe ends up alone on its own line. Paste multi-line blocks as a single
+unbroken paste, or write the whole thing on one line.
+
 Upgrades are then just `sudo apt update && sudo apt upgrade harbory-agent`
 — no re-pairing needed, same as restarting the shell-installed binary.

@@ -110,6 +110,9 @@ export function Landing() {
                 <code className="mono" style={{ flex: 1, minWidth: 0, fontSize: 12.5, overflowX: "auto", whiteSpace: "nowrap" }}>{INSTALL_COMMAND}</code>
                 <CopyButton text={INSTALL_COMMAND} label="install command" />
               </div>
+              <div className="mono" style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 8 }}>
+                or via <Link to="/docs#install" style={{ color: "var(--clay-dark)", fontWeight: 600 }}>apt</Link>, for hosts that want <span className="mono">apt upgrade</span> tracking
+              </div>
             </div>
           </div>
 
@@ -323,6 +326,9 @@ export function Landing() {
               </div>
             </div>
             <Link to="/dashboard" className="pixel-btn">OPEN DASHBOARD TO GENERATE A TOKEN</Link>
+            <div className="mono" style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 14 }}>
+              Prefer apt? See the <Link to="/docs#install" style={{ color: "var(--clay-dark)", fontWeight: 600 }}>install docs</Link> for a repo-tracked alternative.
+            </div>
           </div>
         </div>
       </Reveal>

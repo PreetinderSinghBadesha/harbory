@@ -37,13 +37,19 @@ sudo systemctl start harbory-control-plane
 ```bash
 curl -fsSL https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-agent.sh | bash
 ```
+Or via `apt` on Debian/Ubuntu, if you'd rather `apt upgrade` track future releases than re-run this script:
+```bash
+curl -fsSL https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/add-apt-repo.sh | sudo bash
+sudo apt install harbory-agent
+```
+Both converge on the exact same end state — see [deploy/apt-repo.md](deploy/apt-repo.md).
 
 **3. Pair it** — generate a pairing token from the dashboard, then:
 ```bash
 sudo harbory-agent-pair <pairing-token>
 ```
 
-Full install rationale (why the agent needs `sudo`, how nginx permissions are scoped, GitHub deploy setup) lives in [deploy/README.md](deploy/README.md).
+Full install rationale (why the agent needs `sudo`, how nginx permissions are scoped, GitHub deploy setup) lives in [deploy/README.md](deploy/README.md). Hit a problem? [deploy/apt-repo.md](deploy/apt-repo.md#troubleshooting) and the in-app [Docs page](https://harbory-client.preetindersingh.tech/docs#troubleshooting) both have a troubleshooting section covering real failure modes.
 
 ## Screenshots
 

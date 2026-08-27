@@ -20,8 +20,11 @@ const GUIDE_SPRITE = spriteFor("harbory-docs-guide");
 const GITHUB_URL = "https://github.com/PreetinderSinghBadesha/harbory";
 const DOCS_FOLDER_URL = "https://github.com/PreetinderSinghBadesha/harbory/tree/master/docs";
 const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-agent.sh";
+const ADD_APT_REPO_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/add-apt-repo.sh";
 const CONTROL_PLANE_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-control-plane.sh";
 const INSTALL_COMMAND = `curl -fsSL ${INSTALL_SCRIPT_URL} | bash`;
+const ADD_APT_REPO_COMMAND = `curl -fsSL ${ADD_APT_REPO_SCRIPT_URL} | sudo bash`;
+const APT_INSTALL_COMMAND = "sudo apt install harbory-agent";
 const PAIR_COMMAND = "sudo harbory-agent-pair <pairing-token>";
 const REPAIR_COMMAND = "sudo harbory-agent-pair --force <new-pairing-token>";
 const CONTROL_PLANE_COMMAND = `curl -fsSL ${CONTROL_PLANE_SCRIPT_URL} | bash`;
@@ -35,6 +38,7 @@ const TOC = [
   { id: "control-plane", label: "Running a control plane" },
   { id: "github", label: "Deploying from a repo" },
   { id: "redeploy", label: "Redeploying & re-pairing" },
+  { id: "troubleshooting", label: "Troubleshooting" },
   { id: "sprites", label: "The robots" },
 ];
 
@@ -194,10 +198,11 @@ export function Docs() {
               Install and pair an agent.
             </h1>
             <p style={{ fontSize: 15.5, lineHeight: 1.6, color: "var(--muted)", maxWidth: "62ch", margin: 0 }}>
-              Two scripts, deliberately separate: <span className="mono">install-agent.sh</span> sets up everything
-              a host needs before it can run an agent at all, and{" "}
-              <span className="mono">harbory-agent-pair</span> connects it to a control plane using a short-lived
-              pairing token from the dashboard. Both are safe to re-run.
+              Two scripts, deliberately separate: an installer sets up everything a host needs before it can run an
+              agent at all, and <span className="mono">harbory-agent-pair</span> connects it to a control plane
+              using a short-lived pairing token from the dashboard. Both are safe to re-run. Install either by
+              building from source (<span className="mono">curl | bash</span>) or via <span className="mono">apt</span> —
+              both converge on the same end state.
             </p>
           </div>
           <div className="docs-intro-guide sprite-stage sprite-deco-bob" aria-hidden="true">
@@ -235,12 +240,14 @@ export function Docs() {
 
             <Section id="install" title="1. Install">
               <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--muted)", margin: "0 0 16px" }}>
-                Run this on the host you want to manage. No pairing token needed yet — it doesn't start the agent,
-                just gets the host ready.
+                Run one of these on the host you want to manage. No pairing token needed yet — neither path starts
+                the agent, just gets the host ready.
               </p>
+
+              <div className="field-label" style={{ marginBottom: 8 }}>OPTION A — BUILD FROM SOURCE</div>
               <CodeBlock command={INSTALL_COMMAND} label="install command" />
               <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "18px 0 0" }}>
-                This builds <span className="mono">harbory-agent</span>, installs it to{" "}
+                Builds <span className="mono">harbory-agent</span>, installs it to{" "}
                 <span className="mono">/usr/local/bin</span>, and creates:
               </p>
               <ul style={{ fontSize: 13.5, lineHeight: 1.9, color: "var(--muted)", margin: "8px 0 0", paddingLeft: 20 }}>
@@ -249,6 +256,24 @@ export function Docs() {
                 <li>a systemd unit (<span className="mono">harbory-agent.service</span>) — installed, not started yet</li>
                 <li>the <span className="mono">harbory-agent-pair</span> helper used in the next step</li>
               </ul>
+
+              <div className="field-label" style={{ margin: "28px 0 8px" }}>OPTION B — APT (UBUNTU/DEBIAN)</div>
+              <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "0 0 14px" }}>
+                A one-time repo bootstrap, then a normal install that hooks into{" "}
+                <span className="mono">apt upgrade</span> for future updates instead of needing this script
+                re-run:
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <CodeBlock command={ADD_APT_REPO_COMMAND} label="add repo command" step={1} />
+                <CodeBlock command={APT_INSTALL_COMMAND} label="apt install command" step={2} />
+              </div>
+              <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "18px 0 0" }}>
+                Same end state as Option A — same service user, same nginx wrapper/sudoers, same env file. Step 1
+                only ever needs running once per host; it registers Harbory's signing key and apt source (every
+                third-party repo — Docker's, Chrome's — needs the same one-time step, apt refuses to trust a
+                source it hasn't been told about). See{" "}
+                <span className="mono">deploy/apt-repo.md</span> on GitHub for the full repo-hosting story.
+              </p>
             </Section>
 
             <Section id="pair" title="2. Pair">
@@ -400,6 +425,100 @@ export function Docs() {
               <div style={{ marginTop: 14 }}>
                 <CodeBlock command={REPAIR_COMMAND} label="re-pair command" />
               </div>
+            </Section>
+
+            <Section id="troubleshooting" title="Troubleshooting">
+              <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--muted)", margin: "0 0 20px" }}>
+                Real failure modes, not hypothetical ones — every entry below actually happened while setting this
+                up.
+              </p>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <div className="pixel-panel-sm" style={{ padding: "16px 18px", background: "var(--bg)" }}>
+                  <div className="mono" style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+                    E: Unable to locate package harbory-agent
+                  </div>
+                  <p style={{ fontSize: 13, lineHeight: 1.7, color: "var(--muted)", margin: 0 }}>
+                    The apt repo was never registered on this host, or <span className="mono">apt update</span>{" "}
+                    hasn't run since it was added. Run the Option B commands above in order — Step 1 (add the
+                    repo), <span className="mono">sudo apt update</span>, then Step 2.
+                  </p>
+                </div>
+
+                <div className="pixel-panel-sm" style={{ padding: "16px 18px", background: "var(--bg)" }}>
+                  <div className="mono" style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+                    Could not open lock file /var/lib/dpkg/lock-frontend
+                  </div>
+                  <p style={{ fontSize: 13, lineHeight: 1.7, color: "var(--muted)", margin: 0 }}>
+                    Missing <span className="mono">sudo</span> — <span className="mono">apt install</span> always
+                    needs root. <span className="mono">sudo apt install harbory-agent</span>.
+                  </p>
+                </div>
+
+                <div className="pixel-panel-sm" style={{ padding: "16px 18px", background: "var(--bg)" }}>
+                  <div className="mono" style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+                    ERROR harbory_agent::compose: failed to run docker compose ls
+                  </div>
+                  <p style={{ fontSize: 13, lineHeight: 1.7, color: "var(--muted)", margin: 0 }}>
+                    The Docker Compose <em>plugin</em> is a separate package from the daemon on Debian/Ubuntu —{" "}
+                    <span className="mono">docker.io</span> doesn't bundle it. Fix:{" "}
+                    <span className="mono">sudo apt install docker-compose-v2</span> (or{" "}
+                    <span className="mono">docker-compose-plugin</span> if Docker was installed from Docker's own
+                    apt repo), then <span className="mono">sudo systemctl restart harbory-agent</span>. Fresh
+                    installs pull this in automatically now — only matters for a host that installed the agent
+                    before this was fixed.
+                  </p>
+                </div>
+
+                <div className="pixel-panel-sm" style={{ padding: "16px 18px", background: "var(--bg)" }}>
+                  <div className="mono" style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+                    harbory-agent: FAILED — harbory-agent could not run nginx -t through the wrapper
+                  </div>
+                  <p style={{ fontSize: 13, lineHeight: 1.7, color: "var(--muted)", margin: 0 }}>
+                    The installer's own self-test failed — proxy-route deploys won't work until this is fixed.
+                    Check the printed output for the actual <span className="mono">nginx -t</span> error, and that{" "}
+                    <span className="mono">/etc/sudoers.d/harbory-agent-nginx</span> exists and passed{" "}
+                    <span className="mono">visudo -c</span> validation (the installer skips installing it, with a
+                    warning, if the generated rule doesn't validate).
+                  </p>
+                </div>
+
+                <div className="pixel-panel-sm" style={{ padding: "16px 18px", background: "var(--bg)" }}>
+                  <div className="mono" style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+                    Agent shows OFFLINE right after pairing
+                  </div>
+                  <p style={{ fontSize: 13, lineHeight: 1.7, color: "var(--muted)", margin: 0 }}>
+                    Check <span className="mono">systemctl status harbory-agent.service</span> first — a common
+                    cause is Docker not being reachable at all (the service's own{" "}
+                    <span className="mono">ExecStartPre</span> pre-flight check fails fast with Docker's real
+                    error rather than a buried panic).{" "}
+                    <span className="mono">journalctl -u harbory-agent -f</span> shows the live connection
+                    attempts if the service itself is running.
+                  </p>
+                </div>
+
+                <div className="pixel-panel-sm" style={{ padding: "16px 18px", background: "var(--bg)" }}>
+                  <div className="mono" style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+                    A compose stack deploys but its containers never start
+                  </div>
+                  <p style={{ fontSize: 13, lineHeight: 1.7, color: "var(--muted)", margin: 0 }}>
+                    Check for a declared external network the compose file assumes already exists (a common
+                    pattern for shared reverse-proxy setups) — the agent creates any missing ones automatically
+                    now, but an older agent build won't. Run{" "}
+                    <span className="mono">docker network ls</span> on the host to check, and{" "}
+                    <span className="mono">sudo apt upgrade harbory-agent</span> (or re-run the install script) to
+                    get the fix.
+                  </p>
+                </div>
+              </div>
+
+              <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "20px 0 0" }}>
+                Not covered here? Open an issue with the exact error and{" "}
+                <span className="mono">journalctl -u harbory-agent -n 100 --no-pager</span> output —{" "}
+                <a href={`${GITHUB_URL}/issues`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--clay-dark)", fontWeight: 600 }}>
+                  github.com/PreetinderSinghBadesha/harbory/issues
+                </a>.
+              </p>
             </Section>
 
             <Section id="sprites" title="The robots">
