@@ -106,7 +106,14 @@ jobs:
 
       - name: Export public key for distribution
         run: |
-          gpg --armor --export --output apt-repo/harbory-archive-keyring.asc
+          # --batch --yes: the file is committed to the repo, so it already
+          # exists on checkout and gpg would otherwise prompt to overwrite
+          # it — which fails on a runner with no TTY. Export the signing key
+          # by fingerprint rather than everything in the keyring.
+          gpg --batch --yes --armor \
+            --export 257E0ADD08DE9DDE170CAE25E893FE8771735CF8 \
+            --output apt-repo/harbory-archive-keyring.asc
+          gpg --show-keys apt-repo/harbory-archive-keyring.asc
 
       - name: Sync repo to server
         env:
