@@ -18,13 +18,15 @@ jobs:
         include:
           - arch: amd64
             target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            use_cross: false
+            cross_packages: ""
           - arch: arm64
             target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
-            use_cross: true
-    runs-on: ${{ matrix.runner }}
+            # Native gcc cross-toolchain, not the `cross` tool — its
+            # Docker-based path proved unreliable on this runner (silently
+            # fell back to building on the host, defeating the point).
+            # See .cargo/config.toml for the matching linker/strip config.
+            cross_packages: "gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -40,30 +42,15 @@ jobs:
       - name: Install cargo-deb
         run: cargo install cargo-deb --locked
 
-      - name: Install cross (arm64 only)
-        if: matrix.use_cross
-        run: cargo install cross --locked
+      - name: Install cross-toolchain (arm64 only)
+        if: matrix.cross_packages != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.cross_packages }}
 
-      - name: Install aarch64 binutils (arm64 only)
-        if: matrix.use_cross
-        # cargo-deb strips the binary using the host's own `strip` by
-        # default, which can't read a cross-compiled aarch64 ELF — see
-        # .cargo/config.toml, which points it at aarch64-linux-gnu-strip
-        # from this package instead.
-        run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
-
-      - name: Build release binary (native, amd64)
-        if: ${{ !matrix.use_cross }}
+      - name: Build release binary
         run: cargo build --release -p harbory-agent --target ${{ matrix.target }}
-
-      - name: Build release binary (cross, arm64)
-        if: matrix.use_cross
-        run: cross build --release -p harbory-agent --target ${{ matrix.target }}
 
       - name: Build .deb
         run: cargo deb -p harbory-agent --target ${{ matrix.target }} --no-build
-        # `--no-build` because the binary was already cross-compiled above
-        # (cargo-deb's own build step doesn't know about `cross`).
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
