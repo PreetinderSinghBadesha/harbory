@@ -22,7 +22,7 @@ const DOCS_FOLDER_URL = "https://github.com/PreetinderSinghBadesha/harbory/tree/
 const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-agent.sh";
 const ADD_APT_REPO_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/add-apt-repo.sh";
 const CONTROL_PLANE_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-control-plane.sh";
-const INSTALL_COMMAND = `curl -fsSL ${INSTALL_SCRIPT_URL} | bash`;
+const SOURCE_INSTALL_COMMAND = `curl -fsSL ${INSTALL_SCRIPT_URL} | bash`;
 const ADD_APT_REPO_COMMAND = `curl -fsSL ${ADD_APT_REPO_SCRIPT_URL} | sudo bash`;
 const APT_INSTALL_COMMAND = "sudo apt install harbory-agent";
 const PAIR_COMMAND = "sudo harbory-agent-pair <pairing-token>";
@@ -200,9 +200,9 @@ export function Docs() {
             <p style={{ fontSize: 15.5, lineHeight: 1.6, color: "var(--muted)", maxWidth: "62ch", margin: 0 }}>
               Two scripts, deliberately separate: an installer sets up everything a host needs before it can run an
               agent at all, and <span className="mono">harbory-agent-pair</span> connects it to a control plane
-              using a short-lived pairing token from the dashboard. Both are safe to re-run. Install either by
-              building from source (<span className="mono">curl | bash</span>) or via <span className="mono">apt</span> —
-              both converge on the same end state.
+              using a short-lived pairing token from the dashboard. Both are safe to re-run. Install via{" "}
+              <span className="mono">apt</span> (recommended — updates track <span className="mono">apt upgrade</span>{" "}
+              afterward) or by building from source — both converge on the same end state.
             </p>
           </div>
           <div className="docs-intro-guide sprite-stage sprite-deco-bob" aria-hidden="true">
@@ -244,36 +244,31 @@ export function Docs() {
                 the agent, just gets the host ready.
               </p>
 
-              <div className="field-label" style={{ marginBottom: 8 }}>OPTION A — BUILD FROM SOURCE</div>
-              <CodeBlock command={INSTALL_COMMAND} label="install command" />
-              <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "18px 0 0" }}>
-                Builds <span className="mono">harbory-agent</span>, installs it to{" "}
-                <span className="mono">/usr/local/bin</span>, and creates:
-              </p>
-              <ul style={{ fontSize: 13.5, lineHeight: 1.9, color: "var(--muted)", margin: "8px 0 0", paddingLeft: 20 }}>
-                <li>a dedicated, unprivileged <span className="mono">harbory-agent</span> system user</li>
-                <li>its own data directory for the identity key and stored credential</li>
-                <li>a systemd unit (<span className="mono">harbory-agent.service</span>) — installed, not started yet</li>
-                <li>the <span className="mono">harbory-agent-pair</span> helper used in the next step</li>
-              </ul>
-
-              <div className="field-label" style={{ margin: "28px 0 8px" }}>OPTION B — APT (UBUNTU/DEBIAN)</div>
+              <div className="field-label" style={{ marginBottom: 8 }}>OPTION A — APT (UBUNTU/DEBIAN, RECOMMENDED)</div>
               <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "0 0 14px" }}>
                 A one-time repo bootstrap, then a normal install that hooks into{" "}
-                <span className="mono">apt upgrade</span> for future updates instead of needing this script
-                re-run:
+                <span className="mono">apt upgrade</span> for future updates:
               </p>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <CodeBlock command={ADD_APT_REPO_COMMAND} label="add repo command" step={1} />
                 <CodeBlock command={APT_INSTALL_COMMAND} label="apt install command" step={2} />
               </div>
               <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "18px 0 0" }}>
-                Same end state as Option A — same service user, same nginx wrapper/sudoers, same env file. Step 1
-                only ever needs running once per host; it registers Harbory's signing key and apt source (every
-                third-party repo — Docker's, Chrome's — needs the same one-time step, apt refuses to trust a
-                source it hasn't been told about). See{" "}
+                Step 1 only ever needs running once per host; it registers Harbory's signing key and apt source
+                (every third-party repo — Docker's, Chrome's — needs the same one-time step, apt refuses to trust
+                a source it hasn't been told about). Creates the same end state as Option B below: a dedicated,
+                unprivileged <span className="mono">harbory-agent</span> system user, its own data directory, a
+                systemd unit (installed, not started yet), and the{" "}
+                <span className="mono">harbory-agent-pair</span> helper used in the next step. See{" "}
                 <span className="mono">deploy/apt-repo.md</span> on GitHub for the full repo-hosting story.
               </p>
+
+              <div className="field-label" style={{ margin: "28px 0 8px" }}>OPTION B — BUILD FROM SOURCE</div>
+              <p style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--muted)", margin: "0 0 14px" }}>
+                No repo, no apt — builds and installs directly. Update by re-running this script rather than{" "}
+                <span className="mono">apt upgrade</span>:
+              </p>
+              <CodeBlock command={SOURCE_INSTALL_COMMAND} label="install command" />
             </Section>
 
             <Section id="pair" title="2. Pair">

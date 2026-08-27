@@ -12,7 +12,13 @@ import "./Landing.css";
 
 const GITHUB_URL = "https://github.com/PreetinderSinghBadesha/harbory";
 const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/install-agent.sh";
-const INSTALL_COMMAND = `curl -fsSL ${INSTALL_SCRIPT_URL} | bash`;
+const ADD_APT_REPO_SCRIPT_URL = "https://raw.githubusercontent.com/PreetinderSinghBadesha/harbory/master/deploy/add-apt-repo.sh";
+const SOURCE_INSTALL_COMMAND = `curl -fsSL ${INSTALL_SCRIPT_URL} | bash`;
+// The default, primary install path — a single copyable command that
+// registers the repo and installs the package in one go (apt upgrade
+// tracks future releases afterward; the source-build path needs
+// re-running to update).
+const INSTALL_COMMAND = `curl -fsSL ${ADD_APT_REPO_SCRIPT_URL} | sudo bash && sudo apt install harbory-agent`;
 const PAIR_COMMAND = "sudo harbory-agent-pair <pairing-token>";
 
 function Reveal({
@@ -111,7 +117,7 @@ export function Landing() {
                 <CopyButton text={INSTALL_COMMAND} label="install command" />
               </div>
               <div className="mono" style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 8 }}>
-                or via <Link to="/docs#install" style={{ color: "var(--clay-dark)", fontWeight: 600 }}>apt</Link>, for hosts that want <span className="mono">apt upgrade</span> tracking
+                or <Link to="/docs#install" style={{ color: "var(--clay-dark)", fontWeight: 600 }}>build from source</Link>, if you'd rather not add a repo
               </div>
             </div>
           </div>
@@ -327,7 +333,7 @@ export function Landing() {
             </div>
             <Link to="/dashboard" className="pixel-btn">OPEN DASHBOARD TO GENERATE A TOKEN</Link>
             <div className="mono" style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 14 }}>
-              Prefer apt? See the <Link to="/docs#install" style={{ color: "var(--clay-dark)", fontWeight: 600 }}>install docs</Link> for a repo-tracked alternative.
+              Prefer building from source? See the <Link to="/docs#install" style={{ color: "var(--clay-dark)", fontWeight: 600 }}>install docs</Link> for the alternative.
             </div>
           </div>
         </div>
