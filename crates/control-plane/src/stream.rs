@@ -11,7 +11,7 @@ use harbory_protocol::{
         container_command::Action as ContainerAction, control_plane_message::Payload as ControlPlanePayload,
         AgentMessage, Challenge, ContainerCommand, ContainerStatus, ControlPlaneMessage, DockerContainersResponse,
         GitSource as ProtoGitSource, Heartbeat as HeartbeatMsg, HeartbeatAck, ImagesResponse, LogsResponse,
-        NetworksResponse, PortMapping as ProtoPortMapping, ProxyConfig, SystemInfoResponse, Welcome,
+        NetworksResponse, PortMapping as ProtoPortMapping, ProxyConfig, SystemInfoResponse, VolumesResponse, Welcome,
     },
 };
 use rand::RngCore;
@@ -53,6 +53,7 @@ struct ConnectedAgent {
     pending_logs: HashMap<String, oneshot::Sender<LogsResponse>>,
     pending_images: HashMap<String, oneshot::Sender<ImagesResponse>>,
     pending_networks: HashMap<String, oneshot::Sender<NetworksResponse>>,
+    pending_volumes: HashMap<String, oneshot::Sender<VolumesResponse>>,
     pending_system_info: HashMap<String, oneshot::Sender<SystemInfoResponse>>,
     pending_docker_containers: HashMap<String, oneshot::Sender<DockerContainersResponse>>,
 }
@@ -70,6 +71,7 @@ impl ConnectionRegistry {
                 pending_logs: HashMap::new(),
                 pending_images: HashMap::new(),
                 pending_networks: HashMap::new(),
+                pending_volumes: HashMap::new(),
                 pending_system_info: HashMap::new(),
                 pending_docker_containers: HashMap::new(),
             },
@@ -171,6 +173,31 @@ impl ConnectionRegistry {
         Some(rx)
     }
 
+    /// Send a `VolumesRequest` (list-only, or remove-then-list when
+    /// `remove_volume_name` is set) — same pattern as `request_networks`.
+    pub async fn request_volumes(
+        &self,
+        agent_id: Uuid,
+        request_id: String,
+        remove_volume_name: String,
+    ) -> Option<oneshot::Receiver<VolumesResponse>> {
+        let mut guard = self.inner.lock().await;
+        let conn = guard.get_mut(&agent_id)?;
+        let (tx, rx) = oneshot::channel();
+        conn.pending_volumes.insert(request_id.clone(), tx);
+        let msg = ControlPlaneMessage {
+            payload: Some(ControlPlanePayload::VolumesRequest(harbory_protocol::v1::VolumesRequest {
+                request_id: request_id.clone(),
+                remove_volume_name,
+            })),
+        };
+        if conn.outbound.send(Ok(msg)).await.is_err() {
+            conn.pending_volumes.remove(&request_id);
+            return None;
+        }
+        Some(rx)
+    }
+
     /// Send a `SystemInfoRequest` — same pattern as `request_images`.
     pub async fn request_system_info(&self, agent_id: Uuid, request_id: String) -> Option<oneshot::Receiver<SystemInfoResponse>> {
         let mut guard = self.inner.lock().await;
@@ -237,6 +264,17 @@ impl ConnectionRegistry {
         let mut guard = self.inner.lock().await;
         if let Some(conn) = guard.get_mut(&agent_id) {
             if let Some(tx) = conn.pending_networks.remove(&response.request_id) {
+                let _ = tx.send(response);
+            }
+        }
+    }
+
+    /// Resolve a pending volumes request. Called by `drive_connection`
+    /// when the agent sends a `VolumesResponse`.
+    async fn resolve_volumes(&self, agent_id: Uuid, response: VolumesResponse) {
+        let mut guard = self.inner.lock().await;
+        if let Some(conn) = guard.get_mut(&agent_id) {
+            if let Some(tx) = conn.pending_volumes.remove(&response.request_id) {
                 let _ = tx.send(response);
             }
         }
@@ -673,6 +711,9 @@ async fn drive_connection(
             }
             Some(Ok(AgentMessage { payload: Some(AgentPayload::NetworksResponse(resp)) })) => {
                 registry.resolve_networks(agent_id, resp).await;
+            }
+            Some(Ok(AgentMessage { payload: Some(AgentPayload::VolumesResponse(resp)) })) => {
+                registry.resolve_volumes(agent_id, resp).await;
             }
             Some(Ok(AgentMessage { payload: Some(AgentPayload::SystemInfoResponse(resp)) })) => {
                 registry.resolve_system_info(agent_id, resp).await;

@@ -91,6 +91,8 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/:agent_id/images/:image_id", delete(delete_image))
         .route("/agents/:agent_id/networks", get(list_networks))
         .route("/agents/:agent_id/networks/:network_id", delete(delete_network))
+        .route("/agents/:agent_id/volumes", get(list_volumes))
+        .route("/agents/:agent_id/volumes/:volume_name", delete(delete_volume))
         .route("/agents/:agent_id/system-info", get(get_system_info))
         .route("/agents/:agent_id/docker-containers", get(list_docker_containers))
         .route("/agents/:agent_id/proxy-routes", get(list_proxy_routes))
@@ -1107,6 +1109,74 @@ async fn delete_network(
     Path((agent_id, network_id)): Path<(Uuid, String)>,
 ) -> Result<Json<NetworksDto>, StatusCode> {
     networks_via_stream(state, account, agent_id, network_id).await
+}
+
+#[derive(Serialize)]
+struct VolumeInfoDto {
+    name: String,
+    driver: String,
+    mountpoint: String,
+    created_at: i64,
+    in_use: bool,
+}
+
+#[derive(Serialize)]
+struct VolumesDto {
+    volumes: Vec<VolumeInfoDto>,
+    error: String,
+}
+
+/// Same shape as `networks_via_stream`: list-only for GET, remove-then-list
+/// for DELETE.
+async fn volumes_via_stream(
+    State(state): State<AppState>,
+    account: AuthenticatedAccount,
+    agent_id: Uuid,
+    remove_volume_name: String,
+) -> Result<Json<VolumesDto>, StatusCode> {
+    require_owned_agent(&state, &account, agent_id).await?;
+
+    let request_id = Uuid::new_v4().to_string();
+    let rx = state
+        .registry
+        .request_volumes(agent_id, request_id, remove_volume_name)
+        .await
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        Ok(Ok(resp)) => Ok(Json(VolumesDto {
+            error: resp.error,
+            volumes: resp
+                .volumes
+                .into_iter()
+                .map(|v| VolumeInfoDto {
+                    name: v.name,
+                    driver: v.driver,
+                    mountpoint: v.mountpoint,
+                    created_at: v.created_at,
+                    in_use: v.in_use,
+                })
+                .collect(),
+        })),
+        Ok(Err(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
+    }
+}
+
+async fn list_volumes(
+    state: State<AppState>,
+    account: AuthenticatedAccount,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<VolumesDto>, StatusCode> {
+    volumes_via_stream(state, account, agent_id, String::new()).await
+}
+
+async fn delete_volume(
+    state: State<AppState>,
+    account: AuthenticatedAccount,
+    Path((agent_id, volume_name)): Path<(Uuid, String)>,
+) -> Result<Json<VolumesDto>, StatusCode> {
+    volumes_via_stream(state, account, agent_id, volume_name).await
 }
 
 #[derive(Serialize)]

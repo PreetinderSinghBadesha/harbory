@@ -1,6 +1,7 @@
 mod backoff;
 mod compose;
 mod container;
+mod docker_inspect;
 mod git_build;
 mod images;
 mod networks;
@@ -8,6 +9,7 @@ mod proxy;
 mod stream;
 mod system_info;
 mod transport;
+mod volumes;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -78,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
     // Same on-demand pattern as images — network listing/removal and the
     // system-info snapshot.
     let networks = Arc::new(networks::NetworksManager::connect()?);
+    let volumes = Arc::new(volumes::VolumesManager::connect()?);
     let system_info = Arc::new(system_info::SystemInfoManager::connect()?);
 
     // Transient disconnects (network blips, control-plane restarts) don't
@@ -94,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
             proxy.clone(),
             images.clone(),
             networks.clone(),
+            volumes.clone(),
             system_info.clone(),
         )
         .await

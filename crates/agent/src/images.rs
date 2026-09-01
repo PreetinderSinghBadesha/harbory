@@ -1,9 +1,8 @@
-use std::collections::{HashMap, HashSet};
-
-use bollard::container::ListContainersOptions;
 use bollard::image::{ListImagesOptions, RemoveImageOptions};
 use bollard::Docker;
 use harbory_protocol::v1::ImageInfo;
+
+use crate::docker_inspect::in_use_image_ids;
 
 /// Read-only Docker image inspection plus explicit removal, served to the
 /// control plane on demand over the log-request pattern (request/response
@@ -23,19 +22,7 @@ impl ImagesManager {
     /// Every image on this host with an `in_use` flag computed from the
     /// containers currently known to Docker (any state).
     pub async fn list(&self) -> Result<Vec<ImageInfo>, bollard::errors::Error> {
-        let mut container_filters = HashMap::new();
-        container_filters.insert("all".to_string(), vec!["true".to_string()]);
-        let containers = self
-            .docker
-            .list_containers(Some(ListContainersOptions::<String> { all: true, ..Default::default() }))
-            .await?;
-
-        let mut in_use_ids: HashSet<String> = HashSet::new();
-        for c in containers {
-            if let Some(id) = c.image_id {
-                in_use_ids.insert(id);
-            }
-        }
+        let in_use_ids = in_use_image_ids(&self.docker).await?;
 
         let images = self
             .docker

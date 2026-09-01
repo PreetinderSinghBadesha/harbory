@@ -18,6 +18,7 @@ use crate::images::ImagesManager;
 use crate::networks::NetworksManager;
 use crate::proxy::ProxyManager;
 use crate::system_info::SystemInfoManager;
+use crate::volumes::VolumesManager;
 
 /// What this agent believes it has last (successfully or not) applied to
 /// Nginx — compared against the control plane's desired-state hash to
@@ -86,6 +87,7 @@ pub async fn run_stream(
     proxy: Arc<ProxyManager>,
     images: Arc<ImagesManager>,
     networks: Arc<NetworksManager>,
+    volumes: Arc<VolumesManager>,
     system_info: Arc<SystemInfoManager>,
 ) -> anyhow::Result<()> {
     let channel = crate::transport::connect(control_plane_addr).await?;
@@ -311,6 +313,31 @@ pub async fn run_stream(
                                     };
                                     if task_tx.send(resp).await.is_err() {
                                         tracing::warn!("outbound channel closed while sending networks response");
+                                    }
+                                });
+                            }
+                            Some(ControlPlanePayload::VolumesRequest(req)) => {
+                                let volumes = volumes.clone();
+                                let task_tx = tx.clone();
+                                tokio::spawn(async move {
+                                    let result = async {
+                                        if !req.remove_volume_name.is_empty() {
+                                            volumes.remove(&req.remove_volume_name).await.map_err(|e| e.to_string())?;
+                                        }
+                                        volumes.list().await.map_err(|e| e.to_string())
+                                    }
+                                    .await;
+                                    let (vols, error) = match result {
+                                        Ok(list) => (list, String::new()),
+                                        Err(err) => (Vec::new(), err),
+                                    };
+                                    let resp = AgentMessage {
+                                        payload: Some(harbory_protocol::v1::agent_message::Payload::VolumesResponse(
+                                            harbory_protocol::v1::VolumesResponse { request_id: req.request_id, volumes: vols, error },
+                                        )),
+                                    };
+                                    if task_tx.send(resp).await.is_err() {
+                                        tracing::warn!("outbound channel closed while sending volumes response");
                                     }
                                 });
                             }
