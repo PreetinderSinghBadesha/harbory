@@ -56,6 +56,7 @@ message AgentMessage {
     NetworksResponse networks_response = 9;
     SystemInfoResponse system_info_response = 10;
     DockerContainersResponse docker_containers_response = 11;
+    VolumesResponse volumes_response = 12;
   }
 }
 
@@ -72,6 +73,7 @@ message ControlPlaneMessage {
     NetworksRequest networks_request = 9;
     SystemInfoRequest system_info_request = 10;
     DockerContainersRequest docker_containers_request = 11;
+    VolumesRequest volumes_request = 12;
   }
 }
 
@@ -348,6 +350,34 @@ message NetworkInfo {
 message NetworksResponse {
   string request_id = 1;
   repeated NetworkInfo networks = 2;
+  string error = 3;
+}
+
+// --- Volumes: list & remove -------------------------------------------------
+//
+// Same fire-and-forget request/response pattern as NetworksRequest/Response.
+
+message VolumesRequest {
+  string request_id = 1;
+  // Docker volume name to remove before re-listing. Empty = plain list.
+  string remove_volume_name = 2;
+}
+
+message VolumeInfo {
+  string name = 1;
+  string driver = 2;
+  string mountpoint = 3;
+  // Volume creation time, unix seconds.
+  int64 created_at = 4;
+  // True when at least one container on this host (running or stopped)
+  // has this volume mounted — such volumes can't be removed without
+  // removing the container first, so the UI can disable the button.
+  bool in_use = 5;
+}
+
+message VolumesResponse {
+  string request_id = 1;
+  repeated VolumeInfo volumes = 2;
   string error = 3;
 }
 

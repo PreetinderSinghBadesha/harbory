@@ -24,6 +24,7 @@ thiserror = { workspace = true }
 bollard = "0.17"
 tempfile = "3.27.0"
 serde_json.workspace = true
+chrono = { workspace = true }
 
 # Packaging (`cargo deb -p harbory-agent`, run from the workspace root or
 # this crate's directory). All the setup logic install-agent.sh performs

@@ -78,6 +78,18 @@ interface NetworksDto {
   error: string;
 }
 
+interface AgentVolume {
+  name: string;
+  driver: string;
+  mountpoint: string;
+  created_at: number;
+  in_use: boolean;
+}
+interface VolumesDto {
+  volumes: AgentVolume[];
+  error: string;
+}
+
 interface DockerContainer {
   id: string;
   name: string;
@@ -108,13 +120,14 @@ interface SystemInfoDto {
   error: string;
 }
 
-type ResourceTab = "deploy" | "system" | "container" | "routes" | "images" | "networks";
+type ResourceTab = "deploy" | "system" | "container" | "routes" | "images" | "networks" | "volumes";
 
 type PendingAction =
   | { kind: "container"; name: string }
   | { kind: "route"; name: string }
   | { kind: "image"; id: string; label: string }
   | { kind: "network"; id: string; label: string }
+  | { kind: "volume"; name: string }
   | { kind: "revoke" };
 
 function confirmCopy(action: PendingAction): { title: string; message: string; confirmLabel: string } {
@@ -141,6 +154,12 @@ function confirmCopy(action: PendingAction): { title: string; message: string; c
       return {
         title: "DELETE NETWORK",
         message: `Delete network "${action.label}"? Anything still attached to it will lose that connection.`,
+        confirmLabel: "DELETE",
+      };
+    case "volume":
+      return {
+        title: "DELETE VOLUME",
+        message: `Delete volume "${action.name}"? Any data stored in it will be lost. Containers using it must be removed first.`,
         confirmLabel: "DELETE",
       };
     case "revoke":
@@ -805,6 +824,30 @@ export function AgentDetail() {
     },
   });
 
+  const volumes = useQuery({
+    queryKey: ["volumes", agentId],
+    queryFn: () => apiFetch<VolumesDto>(`/agents/${agentId}/volumes`),
+    staleTime: 0,
+    refetchInterval: 20000,
+  });
+  const deleteVolume = useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<VolumesDto>(`/agents/${agentId}/volumes/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["volumes", agentId], data);
+      if (data.error) {
+        setNotice({ text: data.error, tone: "error" });
+      } else {
+        setNotice({ text: "Volume deleted.", tone: "info" });
+      }
+      setConfirmAction(null);
+    },
+    onError: (error) => {
+      setNotice({ text: `Couldn't delete volume: ${(error as Error).message}`, tone: "error" });
+      setConfirmAction(null);
+    },
+  });
+
   const systemInfo = useQuery({
     queryKey: ["system-info", agentId],
     queryFn: () => apiFetch<SystemInfoDto>(`/agents/${agentId}/system-info`),
@@ -841,6 +884,9 @@ export function AgentDetail() {
       case "network":
         deleteNetwork.mutate(confirmAction.id);
         break;
+      case "volume":
+        deleteVolume.mutate(confirmAction.name);
+        break;
       case "revoke":
         revoke.mutate();
         break;
@@ -864,6 +910,7 @@ export function AgentDetail() {
     removeRoute.isPending ||
     deleteImage.isPending ||
     deleteNetwork.isPending ||
+    deleteVolume.isPending ||
     revoke.isPending;
 
   const tabs: { key: ResourceTab; label: string; count?: number }[] = [
@@ -875,6 +922,7 @@ export function AgentDetail() {
     },
     { key: "images", label: "IMAGES", count: images.data ? images.data.images.length : undefined },
     { key: "networks", label: "NETWORKS", count: networks.data ? networks.data.networks.length : undefined },
+    { key: "volumes", label: "VOLUMES", count: volumes.data ? volumes.data.volumes.length : undefined },
     { key: "routes", label: "ROUTES", count: proxyRoutes.data ? proxyRoutes.data.desired.length : undefined },
   ];
 
@@ -1556,6 +1604,76 @@ export function AgentDetail() {
                             onClick={() => setConfirmAction({ kind: "network", id: net.id, label: net.name })}
                             disabled={!net.removable}
                             title={!net.removable ? "Docker built-in network — can't be removed" : undefined}
+                          >
+                            DELETE
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </SectionPanel>
+        )}
+
+        {activeTab === "volumes" && (
+          <SectionPanel
+            title="VOLUMES"
+            count={volumes.data ? volumes.data.volumes.length : undefined}
+            action={
+              <button type="button" className="pixel-btn pixel-btn-ghost pixel-btn-sm" onClick={() => volumes.refetch()} disabled={volumes.isFetching}>
+                {volumes.isFetching ? "…" : "↺ REFRESH"}
+              </button>
+            }
+          >
+            {volumes.data?.error && <div className="alert-row">{volumes.data.error}</div>}
+            {volumes.isLoading && <LoadingSpinner label="Loading volumes…" />}
+            {volumes.isError && (
+              <div className="alert-row">Couldn't load volumes — retrying… ({(volumes.error as Error).message})</div>
+            )}
+            {volumes.data && !volumes.data.error && volumes.data.volumes.length === 0 && (
+              <EmptyHint>No volumes on this host.</EmptyHint>
+            )}
+            {volumes.data && volumes.data.volumes.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>NAME</th>
+                    <th>DRIVER</th>
+                    <th>MOUNTPOINT</th>
+                    <th>CREATED</th>
+                    <th>STATUS</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {volumes.data.volumes.map((vol) => (
+                    <tr key={vol.name}>
+                      <td style={{ fontWeight: 700, wordBreak: "break-all" }}>{vol.name}</td>
+                      <td>{vol.driver}</td>
+                      <td className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>{vol.mountpoint || "—"}</td>
+                      <td>{new Date(vol.created_at * 1000).toLocaleDateString()}</td>
+                      <td>
+                        <span
+                          className="badge"
+                          style={
+                            vol.in_use
+                              ? { background: "#E4F9EE", color: "var(--hp-dark)", borderColor: "var(--hp-dark)" }
+                              : { background: "#F3F0EA", color: "#8A7E72", borderColor: "#8A7E72" }
+                          }
+                        >
+                          {vol.in_use ? "IN USE" : "UNUSED"}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                          <button
+                            type="button"
+                            className="pixel-btn pixel-btn-danger pixel-btn-sm"
+                            onClick={() => setConfirmAction({ kind: "volume", name: vol.name })}
+                            disabled={vol.in_use}
+                            title={vol.in_use ? "Remove the containers using this volume first" : undefined}
                           >
                             DELETE
                           </button>
