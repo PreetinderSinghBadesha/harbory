@@ -2,7 +2,7 @@
 
 **Infrastructure orchestration without the Kubernetes tax.**
 
-Harbory is a self-hosted control plane and lightweight agent, written entirely in Rust, for deploying and managing containers across your own VMs. Deploy straight from a GitHub repo — a single container or a full Docker Compose stack — manage reverse proxy routing, and watch every agent's containers, images, and networks from one dashboard. No cluster to run, no YAML to write.
+Harbory is a self-hosted control plane and lightweight agent, written entirely in Rust, for deploying and managing containers across your own VMs. Deploy straight from a GitHub repo — a single container or a full Docker Compose stack — manage reverse proxy routing, and watch every agent's containers, images, networks, and volumes from one dashboard. No cluster to run, no YAML to write.
 
 ![Landing page](docs/screenshots/landing.png)
 
@@ -12,12 +12,12 @@ Harbory is a self-hosted control plane and lightweight agent, written entirely i
 
 - You have a handful of VMs and want simple, reliable container deployment — not a managed-PaaS bill and not a Kubernetes cluster to babysit.
 - You want to deploy straight from a GitHub repo (single container or a full Compose stack) without wiring up a CI/CD pipeline.
-- You want one dashboard that shows every agent's containers, images, networks, and system health, live.
+- You want one dashboard that shows every agent's containers, images, networks, volumes, and system health, live.
 
 ## Features
 
 - 🚀 **Deploy from a GitHub repo** — a single container (build + run) or a full Docker Compose stack, public or private repos via GitHub OAuth
-- 🐳 **Docker-native management** — containers, images, and networks per agent, browsable like Docker Desktop
+- 🐳 **Docker-native management** — containers, images, networks, and volumes per agent, browsable like Docker Desktop
 - 🔀 **Reverse proxy management** — declarative Nginx routing per agent, validated before every reload
 - 🔐 **Zero-trust agent identity** — Ed25519-signed credentials and short-lived, single-use pairing tokens; no static API keys
 - 📊 **Live system info** — CPU, memory, disk, uptime per agent

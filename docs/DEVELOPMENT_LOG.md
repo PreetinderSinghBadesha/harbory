@@ -83,7 +83,7 @@ Work through these **in order**. Each phase ends with a doc update.
 - [x] Metrics/logging for agent and control plane health
 - [x] **Doc update**: `/docs/observability.md`
 
-*Later phases — multi-region control plane, HA, broader runtime support — are explicitly deferred and not queued as a numbered "Phase 7." Work past Phase 6 (GitHub-repo deploys, Docker Compose stacks, Images/Networks/System tabs, agent naming, Google sign-in, etc.) is tracked as ordinary features/issues, not roadmap phases.*
+*Later phases — multi-region control plane, HA, broader runtime support — are explicitly deferred and not queued as a numbered "Phase 7." Work past Phase 6 (GitHub-repo deploys, Docker Compose stacks, Images/Networks/System tabs, agent naming, Google sign-in, Docker volumes visibility, etc.) is tracked as ordinary features/issues, not roadmap phases.*
 
 ---
 ## 5. Progress Log
@@ -136,7 +136,10 @@ Work through these **in order**. Each phase ends with a doc update.
 - Deviations from plan:
   - **No email/webhook alerting built** — the roadmap explicitly allows "email or in-dashboard," and every external service integrated so far (Supabase in Phase 5) came with real setup friction (an account only the user could create); adding email would mean a *third* such dependency for a channel the roadmap treats as optional. Revisit if in-dashboard alerting proves insufficient in practice.
   - **No generic HTTP request-count/latency metrics** — only domain-level events are instrumented (pairing, connections, heartbeats, dispatches), which is what "agent and control plane health" actually calls for; a generic Axum middleware layer can be layered on later without touching this instrumentation.
-- **This completes the original roadmap in §4.** Later work (multi-region control plane, HA, broader runtime support) is explicitly out of scope per §1 and deferred indefinitely, not queued as "Phase 7." GitHub-repo deploys, Docker Compose stacks, Images/Networks/System tabs, agent naming, and Google sign-in were all built afterward as ordinary features — see git history for details.
+- **This completes the original roadmap in §4.** Later work (multi-region control plane, HA, broader runtime support) is explicitly out of scope per §1 and deferred indefinitely, not queued as "Phase 7." GitHub-repo deploys, Docker Compose stacks, Images/Networks/System tabs, agent naming, Google sign-in, and Docker volumes visibility were all built afterward as ordinary features — see git history for details.
+
+### Post-Phase 6 — Docker Volumes visibility (2026-09-01)
+- Status: added read-only visibility + manual removal of *all* volumes Docker knows about on a paired host (compose-stack volumes, `docker volume create` ones, leftovers from removed containers — previously only reachable by SSHing in and running `docker volume ls` by hand). Mirrored the existing `NetworksManager` pattern end to end: `crates/agent/src/volumes.rs` (`VolumesManager` wrapping `docker.list_volumes()` / `docker.remove_volume()`, returning `name`/`driver`/`mountpoint`/`created_at` plus an `in_use` flag), a new `VolumesRequest`/`VolumesResponse`/`VolumeInfo` in `harbory.proto` (same fire-and-forget shape as `NetworksRequest`/`Response`), a `pending_volumes` map + `GET/DELETE /agents/:id/volumes[/:volume_name]` on the control plane (`stream.rs` / `http.rs`), and a "Volumes" tab on `AgentDetail.tsx` next to Networks/Images with a table + DELETE button (disabled for volumes currently mounted by a container). `in_use` is computed in `crates/agent/src/docker_inspect.rs`, a small helper extracted from `ImagesManager`'s in-use logic so both images and volumes share the single container-list round-trip (it lists running *and* stopped containers, so a stopped container still holds its image id and volume mounts and correctly blocks removal). Docs updated (`docs/protocol.md`, README, this log). Deliberately *not* provisioning/attaching persistent storage to deployed containers — that's a separate concern from seeing and pruning what already exists on the host.
 
 ---
 ## 6. Open Design Questions (revisit before or during relevant phase)
