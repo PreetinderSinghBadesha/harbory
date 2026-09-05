@@ -166,5 +166,9 @@ question in `HARBORY_README.md` §8).
   state in this model.
 - **No restart policy, scaling, or scheduling** — explicitly out of scope
   per §1, not a gap to fill later in this phase.
-- **No volumes or networks** — `ContainerSpec` covers image, env, ports,
-  and command only. Add if/when a real use case needs them.
+- **No volumes or networks in `ContainerSpec`** — desired deploys cover
+  image, env, ports, and command only. Add if/when a real use case needs
+  them. (Note: *provisioning/attaching* a volume to a deployed container is
+  distinct from the read-only *visibility* tab that lists existing host
+  volumes — the latter was added later and deliberately doesn't attach
+  storage to anything.)

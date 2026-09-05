@@ -178,6 +178,70 @@ failures as `Err(Status)` *items* on the stream rather than as the
 handler's own return value. See `crates/control-plane/src/stream.rs`
 (`drive_connection`) for the pattern.
 
+## On-demand inspection: Images, Networks, Volumes, Docker Containers (post-Phase-6 features)
+
+The dashboard's Images / Networks / Volumes / Containers tabs are read-only
+views backed by a *fire-and-forget* request/response pair over the same
+persistent stream — not new RPCs. The control plane inserts a pending
+`oneshot` channel keyed by a `request_id`, writes a `*Request` onto the
+stream, and returns the corresponding HTTP response as soon as the agent
+replies with the matching `*Response`. No result is ever stored; the reply
+is resolved in memory and dropped once the HTTP handler reads it.
+
+Because it's fire-and-forget, a request made while the agent is offline
+is rejected immediately with `503` — there's no queueing against an
+unknown delivery time.
+
+```proto
+// Each resource follows the exact same shape.
+
+message ImagesRequest   { string request_id = 1; string remove_image_id = 2; }
+message ImagesResponse  { string request_id = 1; repeated ImageInfo images = 2; string error = 3; }
+
+message NetworksRequest { string request_id = 1; string remove_network_name = 2; }
+message NetworksResponse{ string request_id = 1; repeated NetworkInfo networks = 2; string error = 3; }
+
+message VolumesRequest  { string request_id = 1; string remove_volume_name = 2; }
+message VolumesResponse { string request_id = 1; repeated VolumeInfo volumes = 2; string error = 3; }
+```
+
+Each `*Request` is a new oneof variant on `ControlPlaneMessage` and each
+`*Response` on `AgentMessage` (e.g. `volumes_request = 12` /
+`volumes_response = 12`). A `DELETE` writes a non-empty
+`remove_<resource>_id/name` so the agent removes that entity before
+re-listing; a `GET` sends an empty removal field.
+
+The `in_use` flags on `ImageInfo` and `VolumeInfo` are computed by listing
+all containers (running *and* stopped) on the host and checking each one's
+image id / mounted volume names — a container holds its image id and its
+volume mounts even when stopped, so an in-use entity's removal is disabled
+in the UI rather than failing on a Docker conflict error.
+
+```proto
+message VolumeInfo {
+  string name = 1;
+  string driver = 2;
+  string mountpoint = 3;
+  int64 created_at = 4;  // unix seconds
+  bool in_use = 5;       // mounted by at least one running or stopped container
+}
+```
+
+The shared container-inspection helper that computes these sets lives in
+`crates/agent/src/docker_inspect.rs`, used by both `ImagesManager` and
+`VolumesManager`.
+
+| Dashboard tab | Agent handler | HTTP endpoint |
+|---|---|---|
+| Images | `crates/agent/src/images.rs` (`ImagesManager`) | `GET/DELETE /agents/:id/images[/:image_id]` |
+| Networks | `crates/agent/src/networks.rs` (`NetworksManager`) | `GET/DELETE /agents/:id/networks[/:network_id]` |
+| Volumes | `crates/agent/src/volumes.rs` (`VolumesManager`) | `GET/DELETE /agents/:id/volumes[/:volume_name]` |
+
+Volumes visibility is purely read-only listing + manual removal of
+*existing* host volumes (compose-stack volumes, `docker volume create`,
+leftovers from removed containers, etc.) — it does not provision or attach
+persistent storage to deployed containers, which is a separate concern.
+
 ## Not yet defined (later phases)
 
 Nothing yet — Phases 1-4's message types are all defined above. Later
