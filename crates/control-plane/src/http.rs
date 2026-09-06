@@ -661,6 +661,55 @@ fn default_path_prefix() -> String {
     "/".to_string()
 }
 
+const MAX_PROXY_FIELD_LEN: usize = 255;
+
+/// Validate a proxy route's fields are safe to embed verbatim into an
+/// Nginx config file. Without this, an authenticated user could inject
+/// arbitrary Nginx directives (`;`, `{`, `}`, newlines, etc.) and turn the
+/// dashboard into de-facto root access to the agent host — host file
+/// disclosure and SSRF. Reject anything that isn't a plain hostname / URL
+/// path / host. See security issue #7.
+///
+/// server_name -> `[a-zA-Z0-9._-]` with an optional leading `*.`, ≤255 chars
+/// path_prefix  -> starts with `/`, URL-safe chars only, ≤255 chars
+/// upstream_host-> `[a-zA-Z0-9.-]`, ≤255 chars
+fn validate_proxy_route(req: &PutProxyRouteRequest) -> bool {
+    if req.server_name.len() > MAX_PROXY_FIELD_LEN
+        || req.path_prefix.len() > MAX_PROXY_FIELD_LEN
+        || req.upstream_host.len() > MAX_PROXY_FIELD_LEN
+    {
+        return false;
+    }
+
+    // server_name and path_prefix are optional — empty means "catch-all"
+    // (`server_name _;`) and "/" respectively, so those are allowed.
+    let server_name = req.server_name.trim_start_matches("*.");
+    if !req.server_name.is_empty()
+        && (server_name.is_empty()
+            || !server_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'))
+    {
+        return false;
+    }
+
+    if !req.path_prefix.is_empty()
+        && (!req.path_prefix.starts_with('/')
+            || !req
+                .path_prefix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/._~-".contains(c)))
+    {
+        return false;
+    }
+
+    if req.upstream_host.is_empty()
+        || !req.upstream_host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return false;
+    }
+
+    true
+}
+
 /// Declares (or updates) one proxy route. Like containers, takes effect
 /// the next time the agent reports its proxy state, not instantly — see
 /// docs/proxy-management.md.
@@ -671,6 +720,10 @@ async fn put_proxy_route(
     Json(req): Json<PutProxyRouteRequest>,
 ) -> Result<StatusCode, StatusCode> {
     require_owned_agent(&state, &account, agent_id).await?;
+
+    if !validate_proxy_route(&req) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     let route = ProxyRoute {
         name,
@@ -1287,6 +1340,75 @@ async fn list_docker_containers(
         })),
         Ok(Err(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
         Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req() -> PutProxyRouteRequest {
+        PutProxyRouteRequest {
+            server_name: "app.example.com".into(),
+            listen_port: 80,
+            path_prefix: "/".into(),
+            upstream_host: "127.0.0.1".into(),
+            upstream_port: 8080,
+        }
+    }
+
+    #[test]
+    fn accepts_normal_route() {
+        assert!(validate_proxy_route(&req()));
+    }
+
+    #[test]
+    fn accepts_wildcard_server_name() {
+        let mut r = req();
+        r.server_name = "*.example.com".into();
+        assert!(validate_proxy_route(&r));
+    }
+
+    #[test]
+    fn rejects_nested_location_injection() {
+        let mut r = req();
+        r.server_name = "evil.com;\nlocation /etc-secret { alias /etc/; return 200; }".into();
+        assert!(!validate_proxy_route(&r));
+    }
+
+    #[test]
+    fn rejects_semicolon_in_any_field() {
+        let mut r = req();
+        r.upstream_host = "db; #".into();
+        assert!(!validate_proxy_route(&r));
+    }
+
+    #[test]
+    fn rejects_braces_in_path_prefix() {
+        let mut r = req();
+        r.path_prefix = "/api { return 200; }".into();
+        assert!(!validate_proxy_route(&r));
+    }
+
+    #[test]
+    fn rejects_path_prefix_not_starting_with_slash() {
+        let mut r = req();
+        r.path_prefix = "api".into();
+        assert!(!validate_proxy_route(&r));
+    }
+
+    #[test]
+    fn rejects_whitespace_in_server_name() {
+        let mut r = req();
+        r.server_name = "app example.com".into();
+        assert!(!validate_proxy_route(&r));
+    }
+
+    #[test]
+    fn rejects_overlong_fields() {
+        let mut r = req();
+        r.server_name = "a".repeat(256);
+        assert!(!validate_proxy_route(&r));
     }
 }
 

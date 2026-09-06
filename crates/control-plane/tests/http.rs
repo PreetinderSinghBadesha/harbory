@@ -191,6 +191,78 @@ async fn owner_can_reach_their_own_agent() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// Regression test for issue #7: an authenticated user must not be able to
+/// inject arbitrary Nginx directives through the proxy-route fields, which
+/// previously turned the dashboard into de-facto root access (host file
+/// disclosure + SSRF). The malicious payload from the issue should be
+/// rejected with 400 before it ever reaches the agent / nginx config.
+#[tokio::test]
+async fn malicious_proxy_route_is_rejected_with_400() {
+    let store = test_store().await;
+    let signer = Keypair::generate();
+    let owner = Uuid::new_v4();
+    let agent_id = register_agent_for_account(&store, &signer, owner).await;
+    let owner_token = make_token(owner, &unique_email());
+
+    let body = json!({
+        "server_name": "evil.com;\nlocation /etc-secret { alias /etc/; return 200; }",
+        "listen_port": 80,
+        "path_prefix": "/",
+        "upstream_host": "127.0.0.1",
+        "upstream_port": 8080,
+    });
+
+    let response = test_app(store)
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/agents/{agent_id}/proxy-routes/evil"))
+                .header("Authorization", format!("Bearer {owner_token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Confirms a normal route (app.example.com, /, 127.0.0.1) still goes
+/// through after the validator was added — nothing about legitimate
+/// reverse-proxy behavior changes.
+#[tokio::test]
+async fn normal_proxy_route_is_still_accepted() {
+    let store = test_store().await;
+    let signer = Keypair::generate();
+    let owner = Uuid::new_v4();
+    let agent_id = register_agent_for_account(&store, &signer, owner).await;
+    let owner_token = make_token(owner, &unique_email());
+
+    let body = json!({
+        "server_name": "app.example.com",
+        "listen_port": 80,
+        "path_prefix": "/",
+        "upstream_host": "127.0.0.1",
+        "upstream_port": 8080,
+    });
+
+    let response = test_app(store)
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/agents/{agent_id}/proxy-routes/web"))
+                .header("Authorization", format!("Bearer {owner_token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
 #[tokio::test]
 async fn revoke_flips_status_and_is_reflected_in_the_agent_list() {
     let store = test_store().await;

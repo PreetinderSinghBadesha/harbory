@@ -18,7 +18,15 @@ pub enum ProxyError {
 /// routes sharing a server_name+listen_port into one block with several
 /// `location`s — see /docs/proxy-management.md for why, and for the
 /// operator-facing consequence (keep server_name distinct per route).
-fn render_route(route: &ProxyRoute) -> String {
+fn render_route(route: &ProxyRoute) -> Option<String> {
+    // Defense-in-depth: even if a route bypasses the control plane's
+    // validator (issue #7), never emit an Nginx config that could carry an
+    // injected directive — doing so is host file disclosure + SSRF. Skip
+    // any route whose fields aren't plain hostname/path/host values.
+    if !route_is_safe(route) {
+        return None;
+    }
+
     let server_name = if route.server_name.is_empty() { "_" } else { route.server_name.as_str() };
     let path_prefix = if route.path_prefix.is_empty() { "/" } else { route.path_prefix.as_str() };
 
@@ -35,14 +43,55 @@ fn render_route(route: &ProxyRoute) -> String {
     let _ = writeln!(out, "        proxy_set_header X-Forwarded-Proto $scheme;");
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out, "}}");
-    out
+    Some(out)
+}
+
+/// Mirrors the control plane's validator: only plain hostname / URL path /
+/// host values may ever reach the Nginx config. Rejects anything containing
+/// `;`, `{`, `}`, whitespace, quotes, or newlines. See issue #7.
+fn route_is_safe(route: &ProxyRoute) -> bool {
+    const MAX_LEN: usize = 255;
+
+    if route.server_name.len() > MAX_LEN || route.path_prefix.len() > MAX_LEN || route.upstream_host.len() > MAX_LEN {
+        return false;
+    }
+
+    // server_name and path_prefix are optional — empty means "catch-all"
+    // (`server_name _;`) and "/" respectively, so those are allowed.
+    let server_name = route.server_name.trim_start_matches("*.");
+    if !route.server_name.is_empty()
+        && (server_name.is_empty()
+            || !server_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'))
+    {
+        return false;
+    }
+
+    if !route.path_prefix.is_empty()
+        && (!route.path_prefix.starts_with('/')
+            || !route
+                .path_prefix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/._~-".contains(c)))
+    {
+        return false;
+    }
+
+    if route.upstream_host.is_empty()
+        || !route.upstream_host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return false;
+    }
+
+    true
 }
 
 pub fn render(routes: &[ProxyRoute]) -> String {
     let mut out = String::from("# Managed by Harbory — do not edit directly, changes will be overwritten.\n\n");
     for route in routes {
-        out.push_str(&render_route(route));
-        out.push('\n');
+        if let Some(block) = render_route(route) {
+            out.push_str(&block);
+            out.push('\n');
+        }
     }
     out
 }
@@ -183,5 +232,52 @@ mod tests {
     fn empty_route_set_renders_just_the_header_comment() {
         let output = render(&[]);
         assert!(!output.contains("server {"));
+    }
+
+    #[test]
+    fn unsafe_host_file_injection_is_not_rendered() {
+        let mut r = route("evil");
+        r.server_name = "evil.com;\nlocation /etc-secret { alias /etc/; return 200; }".into();
+        let output = render(&[r]);
+        assert!(!output.contains("location /etc-secret"));
+        assert!(!output.contains("evil.com;"));
+        assert!(!output.contains("alias /etc/;"));
+    }
+
+    #[test]
+    fn unsafe_upstream_host_is_not_rendered() {
+        let mut r = route("ssrf");
+        r.upstream_host = "169.254.169.254; return".into();
+        let output = render(&[r]);
+        assert!(!output.contains("169.254.169.254"));
+    }
+
+    #[test]
+    fn unsafe_path_prefix_is_not_rendered() {
+        let mut r = route("path");
+        r.path_prefix = "/api { return 200; }".into();
+        let output = render(&[r]);
+        assert!(!output.contains("return 200"));
+    }
+
+    #[test]
+    fn unsafe_route_does_not_break_adjacent_safe_routes() {
+        let output = render(&[route("evil_but_safe"), route("good")]);
+        assert!(output.contains("server_name app.example.test;"));
+    }
+
+    #[test]
+    fn overlong_fields_are_rejected() {
+        let mut r = route("long");
+        r.server_name = "a".repeat(256);
+        assert!(!route_is_safe(&r));
+    }
+
+    #[test]
+    fn valid_route_is_safe() {
+        assert!(route_is_safe(&route("web")));
+        let mut r = route("wild");
+        r.server_name = "*.example.test".into();
+        assert!(route_is_safe(&r));
     }
 }
